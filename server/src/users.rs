@@ -3,7 +3,11 @@ use std::sync::Arc;
 
 use tokio::sync::{RwLock, mpsc};
 
+use flpc::error::ProtocolError;
+use flpc::header::UserJoin;
+
 use crate::error::UsersError;
+use crate::login::accept::get_userjoin_buffer;
 use crate::message::event::ServerEvent;
 
 
@@ -20,15 +24,32 @@ pub enum TryRemove {
 pub struct ConnectedUser {
     username: String,
     tx: Option<mpsc::Sender<ServerEvent>>,
+    onboarded: bool,
 }
 
 impl ConnectedUser {
     pub fn new(username: String) -> Self {
-        Self { username, tx: None }
+        Self {
+            username,
+            tx: None,
+            onboarded: false,
+        }
+    }
+
+    pub fn username(&self) -> &str {
+        self.username.as_str()
     }
 
     pub fn set_sender(&mut self, tx: mpsc::Sender<ServerEvent>) {
         self.tx = Some(tx);
+    }
+
+    pub fn is_onboarded(&self) -> bool {
+        self.onboarded
+    }
+
+    pub fn mark_onboarded(&mut self) {
+        self.onboarded = true;
     }
 }
 
@@ -51,6 +72,10 @@ impl UserState {
             max_count,
             first_free_id: 0,
         })
+    }
+
+    pub fn users(&self) -> &HashMap<u16, ConnectedUser> {
+        &self.usernames
     }
 
     pub fn username(&self, id: u16) -> Option<&str> {
@@ -92,6 +117,15 @@ impl UserState {
 
     pub fn sender(&self, id: u16) -> Option<&mpsc::Sender<ServerEvent>> {
         self.usernames.get(&id).and_then(|user| user.tx.as_ref())
+    }
+
+    pub fn mark_onboarded(&mut self, id: u16) -> Result<(), UsersError> {
+        let user = self
+            .usernames
+            .get_mut(&id)
+            .ok_or(UsersError::UserNotFound { id })?;
+        user.mark_onboarded();
+        Ok(())
     }
 
     pub fn remove(&mut self, id: u16) -> Result<(), UsersError> {
@@ -141,6 +175,22 @@ pub async fn try_set_sender(
     tx: mpsc::Sender<ServerEvent>,
 ) -> Result<(), UsersError> {
     users.write().await.set_sender(id, tx)
+}
+
+
+pub async fn try_mark_onboarded(
+    users: Arc<RwLock<UserState>>,
+    id: u16,
+) -> Result<(), UsersError> {
+    users.write().await.mark_onboarded(id)
+}
+
+
+pub async fn try_get_userjoin(
+    users: Arc<RwLock<UserState>>,
+) -> Result<Vec<UserJoin>, ProtocolError> {
+    let guard = users.read().await;
+    get_userjoin_buffer(guard.users())
 }
 
 

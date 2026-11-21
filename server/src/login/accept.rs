@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::io::{self};
 
@@ -8,9 +9,14 @@ use futures_util::{Sink, SinkExt, StreamExt};
 
 use flpc::tokio::{FLPCodec, FLPCMsg};
 use flpc::error::ProtocolError;
-use flpc::header::{Join, JoinFail};
+use flpc::header::{Join, JoinFail, JoinSuccess, UserJoin};
 
-use crate::users::{UserState, try_insert, TryInsert};
+use crate::users::{
+    ConnectedUser,
+    UserState,
+    try_insert,
+    TryInsert,
+};
 
 
 enum CheckJoin {
@@ -24,7 +30,6 @@ pub enum JoinOutcome {
     ClientFail,
     TcpFail,
 }
-
 
 pub async fn handle_join (
     users: Arc<RwLock<UserState>>,
@@ -111,4 +116,46 @@ where
                 "failed to send JoinFail: {error:?}"
             )),
         })
+}
+
+
+pub async fn send_joinsuccess<S>(sink: &mut S) -> io::Result<()>
+where
+    S: Sink<FLPCMsg, Error = ProtocolError> + Unpin,
+{
+    sink
+        .send(FLPCMsg::JoinSuccess(JoinSuccess {}))
+        .await
+        .map_err(|error| match error {
+            ProtocolError::IoError(error) => error,
+            error => io::Error::other(format!(
+                "failed to send JoinSuccess: {error:?}"
+            )),
+        })
+}
+
+
+pub fn get_userjoin_buffer(
+    users: &HashMap<u16, ConnectedUser>,
+) -> Result<Vec<UserJoin>, ProtocolError> {
+    users
+        .iter()
+        .filter(|(_, user)| user.is_onboarded())
+        .map(|(&id, user)| UserJoin::new(user.username(), id))
+        .collect()
+}
+
+
+pub async fn send_userjoin_buffer<S>(
+    sink: &mut S,
+    joins: Vec<UserJoin>,
+) -> Result<(), ProtocolError>
+where
+    S: Sink<FLPCMsg, Error = ProtocolError> + Unpin,
+{
+    for join in joins {
+        sink.feed(FLPCMsg::UserJoin(join)).await?;
+    }
+
+    sink.flush().await
 }
