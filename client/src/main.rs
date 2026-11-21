@@ -46,6 +46,7 @@ async fn main() -> io::Result<()> {
     let mut terminal = Terminal::new(backend)?;
     
     let mut connection: Option<Framed<TcpStream, FLPCodec>> = None;
+    let mut users: HashMap<u16, String> = HashMap::new();
 
     let mut loginwindow = LoginWindow::new("127.0.0.1:7878", 16);
     let (send, mut recv) = mpsc::channel::<InputEvent>(100);
@@ -100,15 +101,21 @@ async fn main() -> io::Result<()> {
                     continue;
                 }
 
-                match framed.next().await {
-                    Some(Ok(FLPCMsg::JoinSuccess(_))) => {
-                        loginwindow.set_success();
-                    }
-                    Some(Ok(FLPCMsg::JoinFail(_))) => {
-                        loginwindow.set_fail();
-                    }
-                    _ => {
-                        loginwindow.set_fail();
+                loop {
+                    match framed.next().await {
+                        Some(Ok(FLPCMsg::UserJoin(join))) => {
+                            users.insert(join.uuid(), join.username().to_owned());
+                        }
+                        Some(Ok(FLPCMsg::UserLeft(_))) => users.clear(),
+                        Some(Ok(FLPCMsg::JoinSuccess(_))) => {
+                            loginwindow.set_success();
+                            break;
+                        }
+                        _ => {
+                            users.clear();
+                            loginwindow.set_fail();
+                            break;
+                        }
                     }
                 }
                 break;
@@ -163,7 +170,6 @@ async fn main() -> io::Result<()> {
 
     // Chat Window - Main Program
     let mut chatwindow = ChatWindow::new(String::from("You"), 256, 200);
-    let mut users: HashMap<u16, String> = HashMap::new();
     let (send, mut recv) = mpsc::channel::<InputEvent>(512);
     let input_send = send.clone();
     let _ = keypress_sender(input_send);
@@ -185,42 +191,25 @@ async fn main() -> io::Result<()> {
     let read_send = send.clone();
     tokio::spawn(async move {
         while let Some(result) = reader.next().await {
-            match result {
-                Ok(message) => {
-                    match message {
-                        FLPCMsg::ClientMessage(msg) => {
-                            let uuid = msg.uuid();
-                            let msg = String::from(msg.msg());
-                            if read_send
-                                .send(InputEvent::Message(uuid, msg))
-                                .await
-                                .is_err()
-                            {
-                                break;
-                            }
-                        }
-                        FLPCMsg::UserJoin(msg) => {
-                            let uuid = msg.uuid();
-                            let username = String::from(msg.username());
-                            if read_send
-                                .send(InputEvent::UserJoin(uuid, username))
-                                .await
-                                .is_err()
-                            {
-                                break;
-                            }
-                        }
-                        _ => {}
-                    }
+            let event = match result {
+                Ok(FLPCMsg::ClientMessage(msg)) => {
+                    InputEvent::Message(msg.uuid(), msg.msg().to_owned())
                 }
+                Ok(FLPCMsg::UserJoin(join)) => {
+                    InputEvent::UserJoin(join.uuid(), join.username().to_owned())
+                }
+                Ok(FLPCMsg::UserLeft(left)) => InputEvent::UserLeft(left.uuid()),
                 Err(ProtocolError::IoError(_)) => break,
-		        Err(_) => continue,
+                _ => continue,
+            };
+            if read_send.send(event).await.is_err() {
+                break;
             }
         }
     });
                         
     terminal.draw(|frame| {
-        chatwindow.render(frame);
+        chatwindow.render(frame, &users);
     })?;
 
     loop {
@@ -253,28 +242,28 @@ async fn main() -> io::Result<()> {
 				break;
 			}
             Some(InputEvent::UserJoin(uuid, username)) => {
-                users.insert(uuid, username.clone());
-                let msg = format!("<user joined: {}>", username);
-                chatwindow.add_message(msg);
+                if users.get(&uuid) != Some(&username) {
+                    chatwindow.add_message(format!("<user joined: {username}>"));
+                    users.insert(uuid, username);
+                }
+            }
+            Some(InputEvent::UserLeft(uuid)) => {
+                if let Some(username) = users.remove(&uuid) {
+                    chatwindow.add_message(format!("<user left: {username}>"));
+                }
             }
             Some(InputEvent::Message(uuid, message)) => {
-                let username = match users.get(&uuid) {
-                    Some(username) => username,
-                    None => {
-                        continue;
-                    }
-                };
-                let msg = format!("{}> {}", username, message);
-                chatwindow.add_message(msg);
-            }
-            Some(_) => {
-                continue;
+                if let Some(username) = users.get(&uuid) {
+                    chatwindow.add_message(format!("{username}> {message}"));
+                } else {
+                    chatwindow.add_unknown_message(uuid, message);
+                }
             }
 			None => break,
 		}
 
         terminal.draw(|frame| {
-            chatwindow.render(frame);
+            chatwindow.render(frame, &users);
         })?;
         
         if chatwindow.state() {

@@ -1,22 +1,19 @@
-use std::collections::VecDeque;
-use std::collections::HashSet;
+use std::collections::{HashMap, VecDeque};
 
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Position, Rect},
-    text::Line,
+    style::Color,
+    text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
 };
 
 use unicode_width::UnicodeWidthChar;
 
-use crate::input::InputEvent;
-
 #[derive(Debug)]
 pub struct ChatWindow {
     input: Vec<char>,
-    messages: VecDeque<String>,
-    users: HashSet<String>,
+    messages: VecDeque<Line<'static>>,
     username: String,
     i_limit: usize,
     m_limit: usize,
@@ -28,7 +25,6 @@ impl ChatWindow {
         Self {
             input: Vec::new(),
             messages: VecDeque::new(),
-            users: HashSet::new(),
             username: username,
             i_limit: i_limit,
             m_limit: m_limit,
@@ -58,29 +54,22 @@ impl ChatWindow {
 
     // Messages
 
-    pub fn messages(&self) -> &VecDeque<String> {
-        &self.messages
+    pub fn add_message(&mut self, message: String) {
+        self.push_line(Line::from(message));
     }
 
-    pub fn add_message(&mut self, message: String) {
+    pub fn add_unknown_message(&mut self, id: u16, body: String) {
+        self.push_line(Line::from(vec![
+            Span::styled(id.to_string(), Color::Red),
+            Span::raw(format!("> {body}")),
+        ]));
+    }
+
+    fn push_line(&mut self, message: Line<'static>) {
         if self.messages.len() >= self.m_limit {
             self.messages.pop_front();
         }
         self.messages.push_back(message);
-    }
-
-    // Users
-
-    pub fn users(&self) -> &HashSet<String> {
-        &self.users
-    }
-
-    pub fn add_user(&mut self, username: &str) {
-        self.users.insert(username.to_string()); 
-    }
-
-    pub fn remove_user(&mut self, username: &str) {
-        self.users.remove(username);
     }
 
     // Username
@@ -105,7 +94,7 @@ impl ChatWindow {
 
     // Rendering
 
-	pub fn render(&self, frame: &mut Frame) {
+	pub fn render(&self, frame: &mut Frame, users: &HashMap<u16, String>) {
 		let area = frame.area();
 
 		let horizontal = Layout::default()
@@ -130,28 +119,11 @@ impl ChatWindow {
 
 		let output_area = output_block.inner(vertical[0]);
 
-		let messages: Vec<Line> = self.messages()
+		let messages: Vec<_> = self.messages.iter().cloned().collect();
+		let width = usize::from(output_area.width.max(1));
+		let total_lines: usize = messages
 			.iter()
-			.map(|message| Line::from(message.as_str()))
-			.collect();
-
-		let total_lines: usize = self.messages()
-			.iter()
-			.map(|message| {
-				let width = output_area.width.max(1) as usize;
-
-				message
-					.lines()
-					.map(|line| {
-						let line_width: usize = line
-							.chars()
-							.map(|c| UnicodeWidthChar::width(c).unwrap_or(0))
-							.sum();
-
-						line_width.div_ceil(width).max(1)
-					})
-					.sum::<usize>()
-			})
+			.map(|line| line.width().div_ceil(width).max(1))
 			.sum();
 
 		let visible_height = output_area.height as usize;
@@ -208,10 +180,9 @@ impl ChatWindow {
 			frame.render_widget(input_block, vertical[1]);
 		}
 
-		let user_items: Vec<ListItem> = self.users()
-			.iter()
-			.map(|username| ListItem::new(username.as_str()))
-			.collect();
+		let mut usernames: Vec<_> = users.values().map(String::as_str).collect();
+		usernames.sort_unstable();
+		let user_items = usernames.into_iter().map(ListItem::new);
 
 		let users = List::new(user_items)
 			.block(
