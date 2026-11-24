@@ -23,16 +23,22 @@ impl UserHandler {
         while let Some(request) = self.rx.recv().await {
             match request {
                 UserRequest::RegRequest(request) => {
-                    todo!()
+                    let response = self
+                        .insert_user(
+                            request.username(),
+                            request.hashed_password(),
+                        )
+                        .await;
+                    let _ = request.try_send(response);
                 }
             }
         }
     }
 
     async fn insert_user(
-        &mut self,
-        username: String,
-        hashed_password: String,
+        &self,
+        username: &str,
+        hashed_password: &str,
     ) -> RegResponse {
         let registration = sqlx::query_as::<_, (bool, Option<i32>)>(
             "WITH username_check AS (
