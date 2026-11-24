@@ -1,4 +1,5 @@
 mod database;
+mod users;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -6,11 +7,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let pool = database::create_pool().await?;
 
-    sqlx::query("SELECT 1")
-        .execute(&pool)
+    println!("Connected to PostgreSQL successfully.");
+
+    sqlx::migrate!("./migrations")
+        .run(&pool)
         .await?;
 
-    println!("Connected to PostgreSQL successfully.");
+    println!("Users migration completed successfully.");
 
     Ok(())
 }
+
