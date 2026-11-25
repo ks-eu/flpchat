@@ -176,3 +176,17 @@ async fn handle_register_reports_worker_disconnects() {
     .await;
     assert_eq!(code, 5, "worker reply sender dropped");
 }
+
+#[tokio::test]
+async fn handle_register_accepts_empty_credentials() {
+    let (user_tx, mut user_rx) = mpsc::channel(1);
+    let request = Register::new(SERVER_TOKEN.into(), String::new(), String::new());
+    let code = registration_outcome(request, user_tx, Arc::new(Semaphore::new(1)), async {
+        let request = receive_registration(&mut user_rx).await;
+        assert_credentials(&request, "", "");
+        assert!(request.try_send(RegResponse::Success(1)).is_ok());
+    })
+    .await;
+
+    assert_eq!(code, 0);
+}
