@@ -199,3 +199,7 @@ async fn send_serverregister(
 #[path = "../../tests/users/check_token.rs"]
 mod check_token_tests;
 
+#[cfg(test)]
+#[path = "../../tests/users/check_length.rs"]
+mod check_length_tests;
+
