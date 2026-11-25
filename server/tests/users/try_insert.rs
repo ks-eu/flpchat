@@ -98,3 +98,18 @@ async fn try_insert_waits_for_room_in_the_request_queue() {
         .expect("caller should receive the worker reply");
     assert!(matches!(response, RegResponse::Success(7)));
 }
+
+#[tokio::test]
+async fn try_insert_returns_handler_error_when_full_request_queue_closes() {
+    let (user_tx, mut user_rx) = mpsc::channel(1);
+    fill_request_queue(&user_tx);
+    let mut caller = pin!(try_insert("alice", "password-hash", user_tx));
+
+    assert!(poll!(caller.as_mut()).is_pending());
+    user_rx.close();
+
+    let response = timeout(Duration::from_secs(5), caller)
+        .await
+        .expect("caller should resolve when the request queue closes");
+    assert!(matches!(response, RegResponse::HandlerError));
+}
