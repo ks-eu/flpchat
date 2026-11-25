@@ -1,10 +1,14 @@
+use std::pin::pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use argon2::{
     Argon2,
     password_hash::{Error, PasswordVerifier, phc::PasswordHash},
 };
+use futures_util::poll;
 use tokio::sync::Semaphore;
+use tokio::time::timeout;
 
 use super::{Register, hash_password};
 
@@ -31,4 +35,21 @@ async fn hash_password_verifies_exact_input_and_uses_fresh_salts() {
 
     hash_and_verify("").await;
     hash_and_verify("café🔑").await;
+}
+
+#[tokio::test]
+async fn hash_password_waits_for_and_releases_a_permit() {
+    let semaphore = Arc::new(Semaphore::new(1));
+    let held_permit = semaphore.try_acquire().unwrap();
+    let request = Register::new("token".into(), "user".into(), "password".into());
+    let mut hashing = pin!(hash_password(&request, Arc::clone(&semaphore)));
+
+    assert!(poll!(hashing.as_mut()).is_pending());
+    drop(held_permit);
+
+    timeout(Duration::from_secs(5), hashing)
+        .await
+        .expect("hashing should resume when the permit is released")
+        .expect("hashing should succeed");
+    assert_eq!(semaphore.available_permits(), 1);
 }
