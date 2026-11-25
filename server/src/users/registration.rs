@@ -1,4 +1,28 @@
-use tokio::sync::oneshot;
+use std::error::Error;
+use std::sync::Arc;
+
+use argon2::{Argon2, PasswordHasher};
+use tokio::sync::{
+    oneshot,
+    mpsc,
+    Semaphore,
+};
+use tokio::net::TcpStream;
+use tokio_util::codec::Framed;
+use futures_util::stream::SplitSink;
+use futures_util::SinkExt;
+
+use flpc::unit::{
+    FlpcUnit,
+    Register,
+    ServerRegister,
+};
+use flpc::tokio::{CodecError, FlpcCodec};
+
+use crate::users::UserRequest;
+
+
+type FlpcSink = SplitSink<Framed<TcpStream, FlpcCodec>, FlpcUnit>;
 
 pub enum RegResponse {
     Success(u16),
@@ -42,4 +66,134 @@ impl RegRequest {
         self.response_tx.send(response)
     }
 }
+
+
+pub async fn handle_register(
+    request: Register,
+    user_tx: mpsc::Sender<UserRequest>,
+    hash_permit: Arc<Semaphore>,
+    sink: FlpcSink,
+    server_token: String,
+    max_len_username: usize,
+    max_len_password: usize,
+) {
+    if check_token(&request, server_token) {
+        // Wrong Credentials
+        let _ = send_serverregister(1, sink);
+        return
+    }
+
+    if check_length(
+        &request,
+        max_len_username,
+        max_len_password,
+    ) {
+        // Invalid Username
+        let _ = send_serverregister(2, sink);
+        return
+    }
+
+    let hashed_password = match hash_password(
+        &request,
+        hash_permit,
+    ).await {
+        Ok(hashed_password) => hashed_password,
+        Err(_) => {
+            /// Internal Server Error
+            let _ = send_serverregister(5, sink);
+            return
+        }
+    };
+
+    match try_insert(
+        request.username(),
+        &hashed_password,
+        user_tx,
+    ).await {
+        RegResponse::Success(_) => {
+            let _ = send_serverregister(0, sink);
+        }
+        RegResponse::NotEnoughSpace => {
+            let _ = send_serverregister(3, sink);
+        }
+        RegResponse::UsernameExists => {
+            let _ = send_serverregister(4, sink);
+        }
+        RegResponse::HandlerError => {
+            let _ = send_serverregister(5, sink);
+        }
+    }
+
+}
+
+fn check_token(
+    request: &Register,
+    server_token: String,
+) -> bool {
+    if *request.token() == server_token {
+        false
+    } else {
+        true
+    }
+}
+
+fn check_length (
+    request: &Register, 
+    max_len_username: usize,
+    max_len_password: usize,
+) -> bool {
+    if request.username().len() > max_len_username ||
+       request.password().len() > max_len_password {
+        false
+    } else {
+        true
+    }
+}
+
+/// Hashes the request's password while holding a semaphore permit.
+async fn hash_password(
+    request: &Register,
+    hash_permit: Arc<Semaphore>,
+) -> Result<String, Box<dyn Error + Send + Sync>> {
+    let permit = hash_permit.acquire_owned().await?;
+    let password = request.password().clone();
+    let hash = tokio::task::spawn_blocking(move || {
+        // Keep the permit until hashing ends even if the caller is canceled.
+        let _permit = permit;
+        Argon2::default().hash_password(password.as_bytes())
+    })
+    .await??;
+
+    Ok(hash.to_string())
+}
+
+/// Sends an insert request and returns a handler error if either channel
+/// closes early.
+async fn try_insert(
+    username: &str,
+    hashed_password: &str,
+    user_tx: mpsc::Sender<UserRequest>,
+) -> RegResponse {
+    let (response_tx, response_rx) = oneshot::channel();
+    let request = RegRequest::new(
+        username.to_string(),
+        hashed_password.to_string(),
+        response_tx
+    );
+    if user_tx.send(UserRequest::RegRequest(request)).await.is_err() {
+        return RegResponse::HandlerError;
+    }
+
+    response_rx.await.unwrap_or(RegResponse::HandlerError)
+}
+
+
+/// Sends a registration outcome through the FLPC sink.
+async fn send_serverregister(
+    response_code: u8,
+    mut sink: FlpcSink,
+) -> Result<(), CodecError> {
+    sink.send(ServerRegister::new(response_code).into()).await
+}
+
 
