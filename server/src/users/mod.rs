@@ -57,9 +57,14 @@ impl UserHandler {
                  INSERT INTO users (user_id, username, password_hash)
                  OVERRIDING SYSTEM VALUE
                  SELECT user_id, $1, $2 FROM claimed_id
+                 RETURNING user_id, username
+             ), inserted_profile AS (
+                 INSERT INTO user_information (user_id, username, user_created)
+                 SELECT user_id, username, date_trunc('milliseconds', statement_timestamp())
+                 FROM inserted_user
                  RETURNING user_id
              )
-             SELECT username_exists, (SELECT user_id FROM inserted_user)
+             SELECT username_exists, (SELECT user_id FROM inserted_profile)
              FROM username_check",
         )
         .bind(username)
