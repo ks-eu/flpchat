@@ -1,4 +1,4 @@
-use sqlx::PgPool;
+use sqlx::{PgExecutor, PgPool};
 use tokio::sync::mpsc;
 
 use crate::users::registration::{RegRequest, RegResponse};
@@ -29,20 +29,20 @@ impl UserHandler {
         while let Some(request) = self.rx.recv().await {
             match request {
                 UserRequest::RegRequest(request) => {
-                    let response = self
-                        .insert_user(
-                            request.username(),
-                            request.hashed_password(),
-                        )
-                        .await;
+                    let response = Self::insert_user(
+                        &self.pool,
+                        request.username(),
+                        request.hashed_password(),
+                    )
+                    .await;
                     let _ = request.try_send(response);
                 }
             }
         }
     }
 
-    async fn insert_user(
-        &self,
+    async fn insert_user<'e>(
+        executor: impl PgExecutor<'e>,
         username: &str,
         hashed_password: &str,
     ) -> RegResponse {
@@ -75,7 +75,7 @@ impl UserHandler {
         )
         .bind(username)
         .bind(hashed_password)
-        .fetch_one(&self.pool)
+        .fetch_one(executor)
         .await;
 
         match registration {
@@ -114,3 +114,7 @@ pub async fn remove_user(pool: &PgPool, user_id: u16) -> RemoveResponse {
         Err(_) => RemoveResponse::HandlerError,
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/users/insert_user.rs"]
+mod tests;

@@ -1,0 +1,18 @@
+name: lightchat-test
+
+services:
+  test-db:
+    image: postgres:18.7-bookworm
+    environment:
+      POSTGRES_USER: lightchat_test
+      POSTGRES_PASSWORD: lightchat_test
+      POSTGRES_DB: lightchat_test
+    ports:
+      - "127.0.0.1:55432:5432"
+    tmpfs:
+      - /var/lib/postgresql
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "lightchat_test", "-d", "lightchat_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
