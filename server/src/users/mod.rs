@@ -9,6 +9,12 @@ pub enum UserRequest {
     RegRequest(RegRequest),
 }
 
+pub enum RemoveResponse {
+    Success,
+    UserNotFound,
+    HandlerError,
+}
+
 pub struct UserHandler {
     pool: PgPool,
     rx: mpsc::Receiver<UserRequest>,
@@ -87,5 +93,24 @@ impl UserHandler {
             }
             Err(_) => RegResponse::HandlerError,
         }
+    }
+}
+
+pub async fn remove_user(pool: &PgPool, user_id: u16) -> RemoveResponse {
+    let removal = sqlx::query(
+        "WITH removed_user AS (
+             DELETE FROM users WHERE user_id = $1 RETURNING user_id
+         )
+         INSERT INTO available_user_ids (user_id)
+         SELECT user_id FROM removed_user",
+    )
+    .bind(i32::from(user_id))
+    .execute(pool)
+    .await;
+
+    match removal {
+        Ok(result) if result.rows_affected() == 1 => RemoveResponse::Success,
+        Ok(_) => RemoveResponse::UserNotFound,
+        Err(_) => RemoveResponse::HandlerError,
     }
 }
