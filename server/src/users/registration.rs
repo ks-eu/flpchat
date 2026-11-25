@@ -211,3 +211,7 @@ mod hash_password_tests;
 #[path = "../../tests/users/try_insert.rs"]
 mod try_insert_tests;
 
+#[cfg(test)]
+#[path = "../../tests/users/handle_register.rs"]
+mod handle_register_tests;
+
