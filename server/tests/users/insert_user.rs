@@ -96,3 +96,26 @@ postgres_test! {
         tx.rollback().await
     }
 }
+
+postgres_test! {
+    async fn insert_user_creates_no_rows_when_id_pool_is_empty(pool: PgPool) -> sqlx::Result<()> {
+        let mut tx = pool.begin().await?;
+        sqlx::query("DELETE FROM available_user_ids")
+            .execute(&mut *tx)
+            .await?;
+
+        assert!(matches!(
+            UserHandler::insert_user(&mut *tx, "no_id", "fixture-hash").await,
+            RegResponse::NotEnoughSpace
+        ));
+
+        let row_counts = sqlx::query_as::<_, (i64, i64)>(
+            "SELECT (SELECT count(*) FROM users), (SELECT count(*) FROM user_information)",
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+        assert_eq!(row_counts, (0, 0));
+
+        tx.rollback().await
+    }
+}
