@@ -104,3 +104,40 @@ async fn handle_register_encodes_worker_outcomes() {
         assert_eq!(code, expected_code);
     }
 }
+
+#[tokio::test]
+async fn handle_register_validates_token_before_length_and_length_before_hashing() {
+    // (scenario, token, username, password, closed semaphore, wire code)
+    let cases = [
+        ("wrong token", "wrong", "user", "valid", false, 1),
+        ("overlong username", SERVER_TOKEN, "ééx", "valid", false, 2),
+        ("overlong password", SERVER_TOKEN, "user", "éééx", false, 2),
+        ("token before length", "wrong", "ééx", "valid", false, 1),
+        (
+            "length before hashing",
+            SERVER_TOKEN,
+            "user",
+            "éééx",
+            true,
+            2,
+        ),
+    ];
+
+    for (scenario, token, username, password, semaphore_closed, expected_code) in cases {
+        let (user_tx, mut user_rx) = mpsc::channel(1);
+        let permit = Arc::new(Semaphore::new(1));
+        if semaphore_closed {
+            permit.close();
+        }
+        let request = Register::new(token.into(), username.into(), password.into());
+        let code = registration_outcome(request, user_tx, permit, async {
+            assert!(
+                user_rx.recv().await.is_none(),
+                "{scenario} reached the worker"
+            );
+        })
+        .await;
+
+        assert_eq!(code, expected_code, "{scenario}");
+    }
+}
