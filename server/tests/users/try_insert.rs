@@ -128,3 +128,17 @@ async fn try_insert_returns_handler_error_when_worker_drops_reply_sender() {
         .expect("caller should resolve when the reply sender is dropped");
     assert!(matches!(response, RegResponse::HandlerError));
 }
+
+#[tokio::test]
+async fn try_insert_cancellation_returns_the_undelivered_worker_reply() {
+    let (user_tx, mut user_rx) = mpsc::channel(1);
+    let request = {
+        let mut caller = pin!(try_insert("alice", "password-hash", user_tx));
+        assert!(poll!(caller.as_mut()).is_pending());
+        let UserRequest::RegRequest(request) = user_rx.try_recv().expect("registration request");
+        request
+    };
+
+    let reply = request.try_send(RegResponse::Success(42));
+    assert!(matches!(reply, Err(RegResponse::Success(42))));
+}
