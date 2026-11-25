@@ -76,3 +76,23 @@ postgres_test! {
         tx.rollback().await
     }
 }
+
+postgres_test! {
+    async fn insert_user_claims_last_usable_id(pool: PgPool) -> sqlx::Result<()> {
+        let mut tx = pool.begin().await?;
+        sqlx::query("DELETE FROM available_user_ids WHERE user_id <> 65535")
+            .execute(&mut *tx)
+            .await?;
+
+        assert!(matches!(
+            UserHandler::insert_user(&mut *tx, "last_id", "fixture-hash").await,
+            RegResponse::Success(65535)
+        ));
+        assert!(matches!(
+            UserHandler::insert_user(&mut *tx, "next_user", "fixture-hash").await,
+            RegResponse::NotEnoughSpace
+        ));
+
+        tx.rollback().await
+    }
+}
