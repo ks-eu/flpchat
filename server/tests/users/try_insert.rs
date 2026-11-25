@@ -56,3 +56,17 @@ async fn try_insert_returns_the_workers_unsuccessful_reply() {
         assert_eq!(discriminant(&response), expected);
     }
 }
+
+#[tokio::test]
+async fn try_insert_returns_handler_error_when_request_receiver_is_gone() {
+    let (user_tx, user_rx) = mpsc::channel(1);
+    drop(user_rx);
+
+    let response = timeout(
+        Duration::from_secs(5),
+        try_insert("alice", "password-hash", user_tx),
+    )
+    .await
+    .expect("caller should resolve when the request receiver is dropped");
+    assert!(matches!(response, RegResponse::HandlerError));
+}
