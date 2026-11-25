@@ -119,3 +119,64 @@ postgres_test! {
         tx.rollback().await
     }
 }
+
+postgres_test! {
+    async fn insert_user_preserves_existing_account_and_available_id(pool: PgPool) -> sqlx::Result<()> {
+        let mut tx = pool.begin().await?;
+        sqlx::query("DELETE FROM available_user_ids WHERE user_id > 2")
+            .execute(&mut *tx)
+            .await?;
+
+        let username = "duplicate_user";
+        assert!(matches!(
+            UserHandler::insert_user(&mut *tx, username, "original-hash").await,
+            RegResponse::Success(1)
+        ));
+
+        // Make a profile rewrite visible even if it writes the same username.
+        sqlx::query(
+            "UPDATE user_information
+             SET admin_status = true,
+                 user_created = '2026-01-01 00:00:00+00',
+                 last_online = '2026-01-02 00:00:00+00'
+             WHERE user_id = 1",
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        assert!(matches!(
+            UserHandler::insert_user(&mut *tx, username, "different-hash").await,
+            RegResponse::UsernameExists
+        ));
+
+        let account = sqlx::query_as::<_, (i32, String, String)>(
+            "SELECT user_id, username, password_hash FROM users",
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+        assert_eq!(
+            account,
+            [(1, username.to_owned(), "original-hash".to_owned())]
+        );
+
+        let profile = sqlx::query_as::<_, (i32, String, bool, Option<bool>, Option<bool>)>(
+            "SELECT user_id, username, admin_status,
+                    user_created = '2026-01-01 00:00:00+00',
+                    last_online = '2026-01-02 00:00:00+00'
+             FROM user_information",
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+        assert_eq!(
+            profile,
+            [(1, username.to_owned(), true, Some(true), Some(true))]
+        );
+
+        let available_ids = sqlx::query_scalar::<_, i32>("SELECT user_id FROM available_user_ids")
+            .fetch_all(&mut *tx)
+            .await?;
+        assert_eq!(available_ids, [2]);
+
+        tx.rollback().await
+    }
+}
