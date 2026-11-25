@@ -15,3 +15,7 @@ pub async fn create_pool() -> Result<PgPool, sqlx::Error> {
 
     Ok(pool)
 }
+
+#[cfg(test)]
+#[path = "../../tests/database/serial.rs"]
+pub(crate) mod serial_tests;
