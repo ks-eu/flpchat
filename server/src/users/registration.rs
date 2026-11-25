@@ -195,4 +195,7 @@ async fn send_serverregister(
     sink.send(ServerRegister::new(response_code).into()).await
 }
 
+#[cfg(test)]
+#[path = "../../tests/users/check_token.rs"]
+mod check_token_tests;
 
