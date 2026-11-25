@@ -79,7 +79,7 @@ pub async fn handle_register(
 ) {
     if check_token(&request, server_token) {
         // Wrong Credentials
-        let _ = send_serverregister(1, sink);
+        let _ = send_serverregister(1, sink).await;
         return
     }
 
@@ -89,7 +89,7 @@ pub async fn handle_register(
         max_len_password,
     ) {
         // Invalid Username
-        let _ = send_serverregister(2, sink);
+        let _ = send_serverregister(2, sink).await;
         return
     }
 
@@ -99,8 +99,8 @@ pub async fn handle_register(
     ).await {
         Ok(hashed_password) => hashed_password,
         Err(_) => {
-            /// Internal Server Error
-            let _ = send_serverregister(5, sink);
+            // Internal Server Error
+            let _ = send_serverregister(5, sink).await;
             return
         }
     };
@@ -111,16 +111,16 @@ pub async fn handle_register(
         user_tx,
     ).await {
         RegResponse::Success(_) => {
-            let _ = send_serverregister(0, sink);
+            let _ = send_serverregister(0, sink).await;
         }
         RegResponse::NotEnoughSpace => {
-            let _ = send_serverregister(3, sink);
+            let _ = send_serverregister(3, sink).await;
         }
         RegResponse::UsernameExists => {
-            let _ = send_serverregister(4, sink);
+            let _ = send_serverregister(4, sink).await;
         }
         RegResponse::HandlerError => {
-            let _ = send_serverregister(5, sink);
+            let _ = send_serverregister(5, sink).await;
         }
     }
 
@@ -144,9 +144,9 @@ fn check_length (
 ) -> bool {
     if request.username().len() > max_len_username ||
        request.password().len() > max_len_password {
-        false
-    } else {
         true
+    } else {
+        false
     }
 }
 
