@@ -158,3 +158,21 @@ async fn handle_register_reports_a_closed_hashing_semaphore() {
 
     assert_eq!(code, 5);
 }
+
+#[tokio::test]
+async fn handle_register_reports_worker_disconnects() {
+    let request = Register::new(SERVER_TOKEN.into(), "user".into(), "valid".into());
+    let permit = Arc::new(Semaphore::new(1));
+
+    let (user_tx, user_rx) = mpsc::channel(1);
+    drop(user_rx);
+    let code = registration_outcome(request.clone(), user_tx, Arc::clone(&permit), async {}).await;
+    assert_eq!(code, 5, "worker request receiver dropped");
+
+    let (user_tx, mut user_rx) = mpsc::channel(1);
+    let code = registration_outcome(request, user_tx, permit, async {
+        drop(receive_registration(&mut user_rx).await);
+    })
+    .await;
+    assert_eq!(code, 5, "worker reply sender dropped");
+}
