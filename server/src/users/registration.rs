@@ -123,7 +123,6 @@ pub async fn handle_register(
             let _ = send_serverregister(5, sink).await;
         }
     }
-
 }
 
 fn check_token(
