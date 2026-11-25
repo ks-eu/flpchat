@@ -206,3 +206,61 @@ postgres_test! {
         tx.rollback().await
     }
 }
+
+postgres_test! {
+    async fn insert_user_restores_claimed_id_if_profile_insert_fails(pool: PgPool) -> sqlx::Result<()> {
+        let mut tx = pool.begin().await?;
+        sqlx::query("DELETE FROM available_user_ids WHERE user_id <> 7")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "ALTER TABLE user_information
+             ADD CONSTRAINT reject_fixture_username CHECK (username <> 'rejected_profile')",
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        // A temporary sequence can record completed DELETEs across savepoint rollback.
+        sqlx::raw_sql(
+            "CREATE TEMP SEQUENCE completed_id_deletes;
+             CREATE FUNCTION pg_temp.record_completed_id_delete() RETURNS trigger
+             LANGUAGE plpgsql AS $$
+             BEGIN
+                 PERFORM nextval('pg_temp.completed_id_deletes');
+                 RETURN NULL;
+             END;
+             $$;
+             CREATE TRIGGER record_completed_id_delete
+             AFTER DELETE ON available_user_ids FOR EACH STATEMENT
+             EXECUTE FUNCTION pg_temp.record_completed_id_delete();",
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        let mut attempt = sqlx::Acquire::begin(&mut tx).await?;
+        let response =
+            UserHandler::insert_user(&mut *attempt, "rejected_profile", "fixture-hash").await;
+        attempt.rollback().await?;
+        assert!(matches!(response, RegResponse::HandlerError));
+
+        let id_delete_completed =
+            sqlx::query_scalar::<_, bool>("SELECT is_called FROM pg_temp.completed_id_deletes")
+                .fetch_one(&mut *tx)
+                .await?;
+        assert!(!id_delete_completed, "ID deletion completed before the profile error");
+
+        let row_counts = sqlx::query_as::<_, (i64, i64)>(
+            "SELECT (SELECT count(*) FROM users), (SELECT count(*) FROM user_information)",
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+        assert_eq!(row_counts, (0, 0));
+
+        let available_ids = sqlx::query_scalar::<_, i32>("SELECT user_id FROM available_user_ids")
+            .fetch_all(&mut *tx)
+            .await?;
+        assert_eq!(available_ids, [7]);
+
+        tx.rollback().await
+    }
+}
