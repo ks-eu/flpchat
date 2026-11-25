@@ -141,3 +141,20 @@ async fn handle_register_validates_token_before_length_and_length_before_hashing
         assert_eq!(code, expected_code, "{scenario}");
     }
 }
+
+#[tokio::test]
+async fn handle_register_reports_a_closed_hashing_semaphore() {
+    let (user_tx, mut user_rx) = mpsc::channel(1);
+    let permit = Arc::new(Semaphore::new(1));
+    permit.close();
+    let request = Register::new(SERVER_TOKEN.into(), "user".into(), "valid".into());
+    let code = registration_outcome(request, user_tx, permit, async {
+        assert!(
+            user_rx.recv().await.is_none(),
+            "hashing failure reached the worker"
+        );
+    })
+    .await;
+
+    assert_eq!(code, 5);
+}
