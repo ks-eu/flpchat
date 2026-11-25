@@ -7,7 +7,7 @@ use argon2::{
     password_hash::{Error, PasswordVerifier, phc::PasswordHash},
 };
 use futures_util::poll;
-use tokio::sync::Semaphore;
+use tokio::sync::{AcquireError, Semaphore};
 use tokio::time::timeout;
 
 use super::{Register, hash_password};
@@ -52,4 +52,28 @@ async fn hash_password_waits_for_and_releases_a_permit() {
         .expect("hashing should resume when the permit is released")
         .expect("hashing should succeed");
     assert_eq!(semaphore.available_permits(), 1);
+}
+
+#[tokio::test]
+async fn hash_password_fails_when_the_semaphore_closes() {
+    let semaphore = Arc::new(Semaphore::new(1));
+    let held_permit = semaphore.try_acquire().unwrap();
+    let request = Register::new("token".into(), "user".into(), "password".into());
+    let mut waiting = pin!(hash_password(&request, Arc::clone(&semaphore)));
+
+    assert!(poll!(waiting.as_mut()).is_pending());
+    semaphore.close();
+
+    timeout(Duration::from_secs(5), async {
+        let error = waiting.await.expect_err("waiting hash should fail");
+        assert!(error.is::<AcquireError>());
+
+        drop(held_permit);
+        let error = hash_password(&request, Arc::clone(&semaphore))
+            .await
+            .expect_err("new hash should fail");
+        assert!(error.is::<AcquireError>());
+    })
+    .await
+    .expect("both hash requests should resolve");
 }
