@@ -180,3 +180,29 @@ postgres_test! {
         tx.rollback().await
     }
 }
+
+postgres_test! {
+    async fn insert_user_reports_duplicate_before_exhausted_pool(pool: PgPool) -> sqlx::Result<()> {
+        let mut tx = pool.begin().await?;
+        sqlx::query("DELETE FROM available_user_ids WHERE user_id <> 1")
+            .execute(&mut *tx)
+            .await?;
+
+        let username = "duplicate_when_exhausted";
+        assert!(matches!(
+            UserHandler::insert_user(&mut *tx, username, "original-hash").await,
+            RegResponse::Success(1)
+        ));
+        let available_count = sqlx::query_scalar::<_, i64>("SELECT count(*) FROM available_user_ids")
+            .fetch_one(&mut *tx)
+            .await?;
+        assert_eq!(available_count, 0);
+
+        assert!(matches!(
+            UserHandler::insert_user(&mut *tx, username, "different-hash").await,
+            RegResponse::UsernameExists
+        ));
+
+        tx.rollback().await
+    }
+}
