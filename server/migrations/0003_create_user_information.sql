@@ -7,5 +7,5 @@ CREATE TABLE user_information (
     user_created TIMESTAMPTZ,
     last_online TIMESTAMPTZ DEFAULT NULL,
     FOREIGN KEY (user_id, username)
-        REFERENCES users (user_id, username) ON UPDATE CASCADE
+        REFERENCES users (user_id, username) ON DELETE CASCADE ON UPDATE CASCADE
 );
