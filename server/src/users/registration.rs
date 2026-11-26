@@ -73,7 +73,7 @@ pub async fn handle_register(
     user_tx: mpsc::Sender<UserRequest>,
     hash_permit: Arc<Semaphore>,
     sink: FlpcSink,
-    server_token: String,
+    server_token: &str,
     max_len_username: usize,
     max_len_password: usize,
 ) {
@@ -127,7 +127,7 @@ pub async fn handle_register(
 
 fn check_token(
     request: &Register,
-    server_token: String,
+    server_token: &str,
 ) -> bool {
     if *request.token() == server_token {
         false

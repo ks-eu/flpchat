@@ -2,17 +2,14 @@ use sqlx::{PgExecutor, PgPool};
 use tokio::sync::mpsc;
 
 use crate::users::registration::{RegRequest, RegResponse};
+use crate::users::remove::{RemoveRequest, RemoveResponse};
 
 mod registration;
+mod remove;
 
 pub enum UserRequest {
     RegRequest(RegRequest),
-}
-
-pub enum RemoveResponse {
-    Success,
-    UserNotFound,
-    HandlerError,
+    RemoveRequest(RemoveRequest),
 }
 
 pub struct UserHandler {
@@ -69,18 +66,19 @@ impl UserHandler {
             Err(_) => RegResponse::HandlerError,
         }
     }
-}
 
-pub async fn remove_user(pool: &PgPool, user_id: u16) -> RemoveResponse {
-    let removal = sqlx::query(include_str!("queries/remove_user.sql"))
-        .bind(i32::from(user_id))
-        .execute(pool)
-        .await;
 
-    match removal {
-        Ok(result) if result.rows_affected() == 1 => RemoveResponse::Success,
-        Ok(_) => RemoveResponse::UserNotFound,
-        Err(_) => RemoveResponse::HandlerError,
+    async fn remove_user(pool: &PgPool, user_id: u16) -> RemoveResponse {
+        let removal = sqlx::query(include_str!("queries/remove_user.sql"))
+            .bind(i32::from(user_id))
+            .execute(pool)
+            .await;
+
+        match removal {
+            Ok(result) if result.rows_affected() == 1 => RemoveResponse::Success,
+            Ok(_) => RemoveResponse::UserNotFound,
+            Err(_) => RemoveResponse::HandlerError,
+        }
     }
 }
 
