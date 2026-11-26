@@ -3,7 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use argon2::{Argon2, PasswordHasher};
+use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use flpc::{
     tokio::FlpcCodec,
     unit::{FlpcUnit, Register, RemoveSelf, ServerUnit},
@@ -21,6 +21,7 @@ use tokio_util::codec::Framed;
 
 use super::{RegResponse, UserHandler, VerifyResult};
 use crate::database::serial_tests::postgres_test;
+use crate::hashing::{hash_password, verify_password};
 use crate::users::{registration::handle_register, remove::handle_removeself};
 
 const SAMPLE_COUNT: usize = 20;
@@ -95,6 +96,54 @@ async fn read_response(peer: &mut Framed<TcpStream, FlpcCodec>) -> FlpcUnit {
         .expect("handler response should arrive promptly")
         .expect("handler should send a response")
         .expect("peer should decode the response")
+}
+
+// Alias: Hashes the timing password
+// Input: hash_password("timing-password", one-permit semaphore)
+// Expected: The warm-up hash verifies the exact password; report 20 measured samples in milliseconds.
+#[tokio::test]
+#[ignore = "standard performance benchmark"]
+async fn perf_hash() {
+    let permit = Arc::new(Semaphore::new(1));
+    let mut samples = Vec::with_capacity(SAMPLE_COUNT);
+    for run in 0..=SAMPLE_COUNT {
+        let hash_permit = Arc::clone(&permit);
+        let start = Instant::now();
+        let hashed_password = hash_password(TIMING_PASSWORD, hash_permit).await.unwrap();
+        let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+        if run == 0 {
+            let parsed_hash = PasswordHash::new(&hashed_password).unwrap();
+            Argon2::default()
+                .verify_password(TIMING_PASSWORD.as_bytes(), &parsed_hash)
+                .unwrap();
+        } else {
+            samples.push(elapsed_ms);
+        }
+    }
+    report_samples("perf-hash", &mut samples);
+}
+
+// Alias: Verifies the timing password
+// Input: verify_password("timing-password", precomputed hash)
+// Expected: Ok(true) for each call; report 20 measured samples in milliseconds.
+#[test]
+#[ignore = "standard performance benchmark"]
+fn perf_verify_password() {
+    let hashed_password = Argon2::default()
+        .hash_password(TIMING_PASSWORD.as_bytes())
+        .unwrap()
+        .to_string();
+    let mut samples = Vec::with_capacity(SAMPLE_COUNT);
+    for run in 0..=SAMPLE_COUNT {
+        let start = Instant::now();
+        let result = verify_password(TIMING_PASSWORD, &hashed_password);
+        let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+        assert_eq!(result, Ok(true));
+        if run != 0 {
+            samples.push(elapsed_ms);
+        }
+    }
+    report_samples("perf-verify-password", &mut samples);
 }
 
 postgres_test! {
