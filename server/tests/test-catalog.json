@@ -19,6 +19,10 @@
     "user-handler-run": {
       "title": "UserHandler::run",
       "inputs": "self"
+    },
+    "insert-user": {
+      "title": "UserHandler::insert_user",
+      "inputs": "&self, username: &str, hashed_password: &str"
     }
   },
   "cases": {
@@ -253,6 +257,62 @@
       "alias": "Drains the queue before shutdown",
       "input": "IDs=[7], queue RegRequest(\"queued\", \"queued-hash\"), then close all request senders before running the worker.",
       "expected": "The caller receives Success(7) and run returns within the test timeout."
+    },
+    "database::users::tests::insert_new": {
+      "id": "insert-new",
+      "component": "insert-user",
+      "suite": "regular",
+      "alias": "Inserts account and profile",
+      "input": "IDs=[7,42], insert_user(\"new-user\", \"fixture-hash\")",
+      "expected": "Success(7). Account 7 stores the exact username and hash; matching profile has admin_status=false, a creation timestamp and last_online=NULL. Remaining IDs=[42]."
+    },
+    "database::users::tests::insert_duplicate": {
+      "id": "insert-duplicate",
+      "component": "insert-user",
+      "suite": "regular",
+      "alias": "Preserves the existing account and ID pool",
+      "input": "account(7, \"taken\", \"old-hash\"), IDs=[8]; profile admin=true, created 2026-01-01T00:00:00Z, last_online 2026-01-02T00:00:00Z; insert_user(\"taken\", \"different-hash\")",
+      "expected": "UsernameExists. Account hash, all seeded profile fields, and IDs=[8] remain unchanged."
+    },
+    "database::users::tests::insert_duplicate_full": {
+      "id": "insert-duplicate-full",
+      "component": "insert-user",
+      "suite": "regular",
+      "alias": "Detects duplicate before capacity",
+      "input": "account(7, \"taken\", \"old-hash\"), IDs=[], insert_user(\"taken\", \"different-hash\")",
+      "expected": "UsernameExists and no writes."
+    },
+    "database::users::tests::insert_max_id": {
+      "id": "insert-max-id",
+      "component": "insert-user",
+      "suite": "regular",
+      "alias": "Claims the last usable ID",
+      "input": "IDs=[65535], insert_user(\"last-user\", \"fixture-hash\")",
+      "expected": "Success(65535); matching account and profile exist and IDs=[]."
+    },
+    "database::users::tests::insert_full": {
+      "id": "insert-full",
+      "component": "insert-user",
+      "suite": "regular",
+      "alias": "Creates no rows when IDs are exhausted",
+      "input": "IDs=[], insert_user(\"new-user\", \"fixture-hash\")",
+      "expected": "NotEnoughSpace; no account or profile row for \"new-user\"."
+    },
+    "database::users::tests::insert_lowest": {
+      "id": "insert-lowest",
+      "component": "insert-user",
+      "suite": "regular",
+      "alias": "Chooses the lowest available ID",
+      "input": "IDs=[7,42,101], insert_user(\"new-user\", \"fixture-hash\")",
+      "expected": "Success(7); remaining IDs=[42,101]."
+    },
+    "database::users::tests::insert_profile_error": {
+      "id": "insert-profile-error",
+      "component": "insert-user",
+      "suite": "regular",
+      "alias": "Rolls back when profile insertion fails",
+      "input": "IDs=[7], constraint rejects profile username \"blocked\", insert_user(\"blocked\", \"fixture-hash\")",
+      "expected": "HandlerError. Neither row survives and ID 7 remains available."
     }
   }
 }

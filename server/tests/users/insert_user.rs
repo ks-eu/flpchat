@@ -7,266 +7,282 @@ use crate::database::serial_tests::postgres_test;
 use super::transaction_pool::{delete_completed, track_completed_deletes, transaction_pool};
 use super::{PgPool, RegResponse, UserHandler};
 
-postgres_test! {
-    async fn insert_user_success_rolls_back(pool: PgPool) -> sqlx::Result<()> {
-        let tx_pool = transaction_pool(&pool).await?;
-        let handler = UserHandler::new(tx_pool.clone(), mpsc::channel(1).1, Arc::new(Semaphore::new(1)));
-        let username = "insert_user_test";
-        let password_hash = "fixture-hash";
-        let RegResponse::Success(user_id) =
-            handler.insert_user(username, password_hash).await
-        else {
-            panic!("expected insert_user to return Success");
-        };
-        let user_id = i32::from(user_id);
-
-        let account = sqlx::query_as::<_, (String, String)>(
-            "SELECT username, password_hash FROM users WHERE user_id = $1",
-        )
-        .bind(user_id)
-        .fetch_one(&tx_pool)
+async fn set_available_ids(pool: &PgPool, ids: &[i32]) -> sqlx::Result<()> {
+    sqlx::query("DELETE FROM available_user_ids WHERE NOT (user_id = ANY($1))")
+        .bind(ids)
+        .execute(pool)
         .await?;
-        assert_eq!(account, (username.to_owned(), password_hash.to_owned()));
-
-        let profile = sqlx::query_as::<_, (String, bool, bool, bool)>(
-            "SELECT username, admin_status, user_created IS NOT NULL, last_online IS NULL
-             FROM user_information WHERE user_id = $1",
-        )
-        .bind(user_id)
-        .fetch_one(&tx_pool)
-        .await?;
-        assert_eq!(profile, (username.to_owned(), false, true, true));
-
-        let id_available = sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS (SELECT 1 FROM available_user_ids WHERE user_id = $1)",
-        )
-        .bind(user_id)
-        .fetch_one(&tx_pool)
-        .await?;
-        assert!(!id_available, "insert_user should claim the ID");
-
-        sqlx::query("ROLLBACK").execute(&tx_pool).await?;
-
-        let state = sqlx::query_as::<_, (bool, bool, bool)>(
-            "SELECT EXISTS (SELECT 1 FROM users WHERE user_id = $1),
-                    EXISTS (SELECT 1 FROM user_information WHERE user_id = $1),
-                    EXISTS (SELECT 1 FROM available_user_ids WHERE user_id = $1)",
-        )
-        .bind(user_id)
-        .fetch_one(&pool)
-        .await?;
-        assert_eq!(state, (false, false, true), "rollback should restore the ID pool");
-
-        Ok(())
-    }
+    Ok(())
 }
 
+async fn seed_account(pool: &PgPool, id: i32, username: &str, hash: &str) -> sqlx::Result<()> {
+    sqlx::query("DELETE FROM available_user_ids WHERE user_id = $1")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    sqlx::query(
+        "INSERT INTO users (user_id, username, password_hash)
+         OVERRIDING SYSTEM VALUE VALUES ($1, $2, $3)",
+    )
+    .bind(id)
+    .bind(username)
+    .bind(hash)
+    .execute(pool)
+    .await?;
+    sqlx::query("INSERT INTO user_information (user_id, username) VALUES ($1, $2)")
+        .bind(id)
+        .bind(username)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+fn handler(pool: &PgPool) -> UserHandler {
+    UserHandler::new(
+        pool.clone(),
+        mpsc::channel(1).1,
+        Arc::new(Semaphore::new(1)),
+    )
+}
+
+async fn available_ids(pool: &PgPool) -> sqlx::Result<Vec<i32>> {
+    sqlx::query_scalar("SELECT user_id FROM available_user_ids ORDER BY user_id")
+        .fetch_all(pool)
+        .await
+}
+
+// Alias: Inserts account and profile
+// Input: IDs=[7,42], insert_user("new-user", "fixture-hash")
+// Expected: Success(7). Account 7 stores the exact username and hash; matching profile has admin_status=false, a creation timestamp and last_online=NULL. Remaining IDs=[42].
 postgres_test! {
-    async fn insert_user_claims_lowest_available_id(pool: PgPool) -> sqlx::Result<()> {
-        let tx_pool = transaction_pool(&pool).await?;
-        let handler = UserHandler::new(tx_pool.clone(), mpsc::channel(1).1, Arc::new(Semaphore::new(1)));
-        sqlx::query("DELETE FROM available_user_ids WHERE user_id NOT IN (7, 42, 101)")
-            .execute(&tx_pool)
-            .await?;
+    async fn insert_new(pool: PgPool) -> sqlx::Result<()> {
+        let pool = transaction_pool(&pool).await?;
+        set_available_ids(&pool, &[7, 42]).await?;
 
         assert!(matches!(
-            handler.insert_user("lowest_id", "fixture-hash").await,
+            handler(&pool).insert_user("new-user", "fixture-hash").await,
             RegResponse::Success(7)
         ));
-
-        let available_ids =
-            sqlx::query_scalar::<_, i32>("SELECT user_id FROM available_user_ids ORDER BY user_id")
-                .fetch_all(&tx_pool)
-                .await?;
-        assert_eq!(available_ids, [42, 101]);
-
-        sqlx::query("ROLLBACK").execute(&tx_pool).await?;
-        Ok(())
-    }
-}
-
-postgres_test! {
-    async fn insert_user_claims_last_usable_id(pool: PgPool) -> sqlx::Result<()> {
-        let tx_pool = transaction_pool(&pool).await?;
-        let handler = UserHandler::new(tx_pool.clone(), mpsc::channel(1).1, Arc::new(Semaphore::new(1)));
-        sqlx::query("DELETE FROM available_user_ids WHERE user_id <> 65535")
-            .execute(&tx_pool)
-            .await?;
-
-        assert!(matches!(
-            handler.insert_user("last_id", "fixture-hash").await,
-            RegResponse::Success(65535)
-        ));
-        assert!(matches!(
-            handler.insert_user("next_user", "fixture-hash").await,
-            RegResponse::NotEnoughSpace
-        ));
-
-        sqlx::query("ROLLBACK").execute(&tx_pool).await?;
-        Ok(())
-    }
-}
-
-postgres_test! {
-    async fn insert_user_creates_no_rows_when_id_pool_is_empty(pool: PgPool) -> sqlx::Result<()> {
-        let tx_pool = transaction_pool(&pool).await?;
-        let handler = UserHandler::new(tx_pool.clone(), mpsc::channel(1).1, Arc::new(Semaphore::new(1)));
-        sqlx::query("DELETE FROM available_user_ids")
-            .execute(&tx_pool)
-            .await?;
-
-        assert!(matches!(
-            handler.insert_user("no_id", "fixture-hash").await,
-            RegResponse::NotEnoughSpace
-        ));
-
-        let row_counts = sqlx::query_as::<_, (i64, i64)>(
-            "SELECT (SELECT count(*) FROM users), (SELECT count(*) FROM user_information)",
+        let account = sqlx::query_as::<_, (i32, String, String)>(
+            "SELECT user_id, username, password_hash FROM users",
         )
-        .fetch_one(&tx_pool)
+        .fetch_one(&pool)
         .await?;
-        assert_eq!(row_counts, (0, 0));
+        assert_eq!(account, (7, "new-user".into(), "fixture-hash".into()));
 
-        sqlx::query("ROLLBACK").execute(&tx_pool).await?;
+        let profile = sqlx::query_as::<_, (i32, String, bool, bool, bool)>(
+            "SELECT user_id, username, admin_status,
+                    user_created IS NOT NULL, last_online IS NULL
+             FROM user_information",
+        )
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(profile, (7, "new-user".into(), false, true, true));
+        assert_eq!(available_ids(&pool).await?, [42]);
+
+        sqlx::query("ROLLBACK").execute(&pool).await?;
         Ok(())
     }
 }
 
+// Alias: Preserves the existing account and ID pool
+// Input: account(7, "taken", "old-hash"), IDs=[8]; profile admin=true, created 2026-01-01T00:00:00Z, last_online 2026-01-02T00:00:00Z; insert_user("taken", "different-hash")
+// Expected: UsernameExists. Account hash, all seeded profile fields, and IDs=[8] remain unchanged.
 postgres_test! {
-    async fn insert_user_preserves_existing_account_and_available_id(pool: PgPool) -> sqlx::Result<()> {
-        let tx_pool = transaction_pool(&pool).await?;
-        let handler = UserHandler::new(tx_pool.clone(), mpsc::channel(1).1, Arc::new(Semaphore::new(1)));
-        sqlx::query("DELETE FROM available_user_ids WHERE user_id > 2")
-            .execute(&tx_pool)
-            .await?;
-
-        let username = "duplicate_user";
-        assert!(matches!(
-            handler.insert_user(username, "original-hash").await,
-            RegResponse::Success(1)
-        ));
-
-        // Make a profile rewrite visible even if it writes the same username.
+    async fn insert_duplicate(pool: PgPool) -> sqlx::Result<()> {
+        let pool = transaction_pool(&pool).await?;
+        set_available_ids(&pool, &[8]).await?;
+        seed_account(&pool, 7, "taken", "old-hash").await?;
         sqlx::query(
             "UPDATE user_information
              SET admin_status = true,
                  user_created = '2026-01-01 00:00:00+00',
                  last_online = '2026-01-02 00:00:00+00'
-             WHERE user_id = 1",
+             WHERE user_id = 7",
         )
-        .execute(&tx_pool)
+        .execute(&pool)
         .await?;
 
         assert!(matches!(
-            handler.insert_user(username, "different-hash").await,
+            handler(&pool).insert_user("taken", "different-hash").await,
             RegResponse::UsernameExists
         ));
-
         let account = sqlx::query_as::<_, (i32, String, String)>(
             "SELECT user_id, username, password_hash FROM users",
         )
-        .fetch_all(&tx_pool)
+        .fetch_all(&pool)
         .await?;
-        assert_eq!(
-            account,
-            [(1, username.to_owned(), "original-hash".to_owned())]
-        );
-
+        assert_eq!(account, [(7, "taken".into(), "old-hash".into())]);
         let profile = sqlx::query_as::<_, (i32, String, bool, Option<bool>, Option<bool>)>(
             "SELECT user_id, username, admin_status,
                     user_created = '2026-01-01 00:00:00+00',
                     last_online = '2026-01-02 00:00:00+00'
              FROM user_information",
         )
-        .fetch_all(&tx_pool)
+        .fetch_all(&pool)
         .await?;
-        assert_eq!(
-            profile,
-            [(1, username.to_owned(), true, Some(true), Some(true))]
-        );
+        assert_eq!(profile, [(7, "taken".into(), true, Some(true), Some(true))]);
+        assert_eq!(available_ids(&pool).await?, [8]);
 
-        let available_ids = sqlx::query_scalar::<_, i32>("SELECT user_id FROM available_user_ids")
-            .fetch_all(&tx_pool)
-            .await?;
-        assert_eq!(available_ids, [2]);
-
-        sqlx::query("ROLLBACK").execute(&tx_pool).await?;
+        sqlx::query("ROLLBACK").execute(&pool).await?;
         Ok(())
     }
 }
 
+// Alias: Detects duplicate before capacity
+// Input: account(7, "taken", "old-hash"), IDs=[], insert_user("taken", "different-hash")
+// Expected: UsernameExists and no writes.
 postgres_test! {
-    async fn insert_user_reports_duplicate_before_exhausted_pool(pool: PgPool) -> sqlx::Result<()> {
-        let tx_pool = transaction_pool(&pool).await?;
-        let handler = UserHandler::new(tx_pool.clone(), mpsc::channel(1).1, Arc::new(Semaphore::new(1)));
-        sqlx::query("DELETE FROM available_user_ids WHERE user_id <> 1")
-            .execute(&tx_pool)
-            .await?;
-
-        let username = "duplicate_when_exhausted";
-        assert!(matches!(
-            handler.insert_user(username, "original-hash").await,
-            RegResponse::Success(1)
-        ));
-        let available_count = sqlx::query_scalar::<_, i64>("SELECT count(*) FROM available_user_ids")
-            .fetch_one(&tx_pool)
-            .await?;
-        assert_eq!(available_count, 0);
+    async fn insert_duplicate_full(pool: PgPool) -> sqlx::Result<()> {
+        let pool = transaction_pool(&pool).await?;
+        set_available_ids(&pool, &[]).await?;
+        seed_account(&pool, 7, "taken", "old-hash").await?;
 
         assert!(matches!(
-            handler.insert_user(username, "different-hash").await,
+            handler(&pool).insert_user("taken", "different-hash").await,
             RegResponse::UsernameExists
         ));
+        let account = sqlx::query_as::<_, (i32, String, String)>(
+            "SELECT user_id, username, password_hash FROM users",
+        )
+        .fetch_all(&pool)
+        .await?;
+        assert_eq!(account, [(7, "taken".into(), "old-hash".into())]);
+        let profile = sqlx::query_as::<_, (i32, String, bool, bool, bool)>(
+            "SELECT user_id, username, admin_status,
+                    user_created IS NULL, last_online IS NULL
+             FROM user_information",
+        )
+        .fetch_all(&pool)
+        .await?;
+        assert_eq!(profile, [(7, "taken".into(), false, true, true)]);
+        assert!(available_ids(&pool).await?.is_empty());
 
-        sqlx::query("ROLLBACK").execute(&tx_pool).await?;
+        sqlx::query("ROLLBACK").execute(&pool).await?;
         Ok(())
     }
 }
 
+// Alias: Claims the last usable ID
+// Input: IDs=[65535], insert_user("last-user", "fixture-hash")
+// Expected: Success(65535); matching account and profile exist and IDs=[].
 postgres_test! {
-    async fn insert_user_restores_claimed_id_if_profile_insert_fails(pool: PgPool) -> sqlx::Result<()> {
-        let tx_pool = transaction_pool(&pool).await?;
-        let handler = UserHandler::new(tx_pool.clone(), mpsc::channel(1).1, Arc::new(Semaphore::new(1)));
-        sqlx::query("DELETE FROM available_user_ids WHERE user_id <> 7")
-            .execute(&tx_pool)
-            .await?;
+    async fn insert_max_id(pool: PgPool) -> sqlx::Result<()> {
+        let pool = transaction_pool(&pool).await?;
+        set_available_ids(&pool, &[65535]).await?;
+
+        assert!(matches!(
+            handler(&pool).insert_user("last-user", "fixture-hash").await,
+            RegResponse::Success(65535)
+        ));
+        let account = sqlx::query_as::<_, (i32, String, String)>(
+            "SELECT user_id, username, password_hash FROM users",
+        )
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(account, (65535, "last-user".into(), "fixture-hash".into()));
+        let profile = sqlx::query_as::<_, (i32, String, bool, bool, bool)>(
+            "SELECT user_id, username, admin_status,
+                    user_created IS NOT NULL, last_online IS NULL
+             FROM user_information",
+        )
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(profile, (65535, "last-user".into(), false, true, true));
+        assert!(available_ids(&pool).await?.is_empty());
+
+        sqlx::query("ROLLBACK").execute(&pool).await?;
+        Ok(())
+    }
+}
+
+// Alias: Creates no rows when IDs are exhausted
+// Input: IDs=[], insert_user("new-user", "fixture-hash")
+// Expected: NotEnoughSpace; no account or profile row for "new-user".
+postgres_test! {
+    async fn insert_full(pool: PgPool) -> sqlx::Result<()> {
+        let pool = transaction_pool(&pool).await?;
+        set_available_ids(&pool, &[]).await?;
+
+        assert!(matches!(
+            handler(&pool).insert_user("new-user", "fixture-hash").await,
+            RegResponse::NotEnoughSpace
+        ));
+        assert!(sqlx::query_scalar::<_, bool>(
+            "SELECT NOT EXISTS (SELECT 1 FROM users WHERE username = 'new-user')
+                    AND NOT EXISTS (SELECT 1 FROM user_information WHERE username = 'new-user')",
+        )
+        .fetch_one(&pool)
+        .await?);
+        assert!(available_ids(&pool).await?.is_empty());
+
+        sqlx::query("ROLLBACK").execute(&pool).await?;
+        Ok(())
+    }
+}
+
+// Alias: Chooses the lowest available ID
+// Input: IDs=[7,42,101], insert_user("new-user", "fixture-hash")
+// Expected: Success(7); remaining IDs=[42,101].
+postgres_test! {
+    async fn insert_lowest(pool: PgPool) -> sqlx::Result<()> {
+        let pool = transaction_pool(&pool).await?;
+        set_available_ids(&pool, &[7, 42, 101]).await?;
+
+        assert!(matches!(
+            handler(&pool).insert_user("new-user", "fixture-hash").await,
+            RegResponse::Success(7)
+        ));
+        let account = sqlx::query_as::<_, (i32, String, String)>(
+            "SELECT user_id, username, password_hash FROM users",
+        )
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(account, (7, "new-user".into(), "fixture-hash".into()));
+        assert_eq!(available_ids(&pool).await?, [42, 101]);
+
+        sqlx::query("ROLLBACK").execute(&pool).await?;
+        Ok(())
+    }
+}
+
+// Alias: Rolls back when profile insertion fails
+// Input: IDs=[7], constraint rejects profile username "blocked", insert_user("blocked", "fixture-hash")
+// Expected: HandlerError. Neither row survives and ID 7 remains available.
+postgres_test! {
+    async fn insert_profile_error(pool: PgPool) -> sqlx::Result<()> {
+        let pool = transaction_pool(&pool).await?;
+        set_available_ids(&pool, &[7]).await?;
         sqlx::query(
             "ALTER TABLE user_information
-             ADD CONSTRAINT reject_fixture_username CHECK (username <> 'rejected_profile')",
+             ADD CONSTRAINT reject_fixture_username CHECK (username <> 'blocked')",
         )
-        .execute(&tx_pool)
+        .execute(&pool)
         .await?;
+        track_completed_deletes(&pool, "available_user_ids").await?;
 
-        track_completed_deletes(&tx_pool, "available_user_ids").await?;
-
-        sqlx::query("SAVEPOINT insertion_attempt")
-            .execute(&tx_pool)
-            .await?;
-        let response =
-            handler.insert_user("rejected_profile", "fixture-hash").await;
+        sqlx::query("SAVEPOINT insertion_attempt").execute(&pool).await?;
+        let response = handler(&pool)
+            .insert_user("blocked", "fixture-hash")
+            .await;
         sqlx::query("ROLLBACK TO SAVEPOINT insertion_attempt")
-            .execute(&tx_pool)
+            .execute(&pool)
             .await?;
         assert!(matches!(response, RegResponse::HandlerError));
-
         assert!(
-            !delete_completed(&tx_pool).await?,
-            "ID deletion completed before the profile error"
+            !delete_completed(&pool).await?,
+            "ID deletion should roll back with the failed insertion"
         );
 
         let row_counts = sqlx::query_as::<_, (i64, i64)>(
             "SELECT (SELECT count(*) FROM users), (SELECT count(*) FROM user_information)",
         )
-        .fetch_one(&tx_pool)
+        .fetch_one(&pool)
         .await?;
         assert_eq!(row_counts, (0, 0));
+        assert_eq!(available_ids(&pool).await?, [7]);
 
-        let available_ids = sqlx::query_scalar::<_, i32>("SELECT user_id FROM available_user_ids")
-            .fetch_all(&tx_pool)
-            .await?;
-        assert_eq!(available_ids, [7]);
-
-        sqlx::query("ROLLBACK").execute(&tx_pool).await?;
+        sqlx::query("ROLLBACK").execute(&pool).await?;
         Ok(())
     }
 }
