@@ -1,7 +1,6 @@
 use std::error::Error;
 use std::sync::Arc;
 
-use argon2::{Argon2, PasswordHasher};
 use tokio::sync::{
     oneshot,
     mpsc,
@@ -14,8 +13,8 @@ use futures_util::SinkExt;
 
 use flpc::unit::{
     FlpcUnit,
-    Register,
-    ServerRegister,
+    RemoveSelf,
+    ServerRemoveSelf,
 };
 use flpc::tokio::{CodecError, FlpcCodec};
 
@@ -24,22 +23,22 @@ use crate::users::UserRequest;
 
 type FlpcSink = SplitSink<Framed<TcpStream, FlpcCodec>, FlpcUnit>;
 
-pub enum RemoveResponse {
-    Success,
+pub enum RemoveSelfResponse {
+    Success(u16),
     UserNotFound,
     WrongCredentials,
     HandlerError,
 }
 
-pub struct RemoveRequest {
+pub struct RemoveSelfRequest {
     id: u16,
-    response_tx: oneshot::Sender<RemoveResponse>,
+    response_tx: oneshot::Sender<RemoveSelfResponse>,
 }
 
-impl RemoveRequest {
+impl RemoveSelfRequest {
     pub fn new(
         id: u16,
-        response_tx: oneshot::Sender<RemoveResponse>,
+        response_tx: oneshot::Sender<RemoveSelfResponse>,
     ) -> Self {
         Self {
             id,
@@ -53,8 +52,17 @@ impl RemoveRequest {
 
     pub fn try_send(
         self,
-        response: RemoveResponse,
-    ) -> Result<(), RemoveResponse> {
+        response: RemoveSelfResponse,
+    ) -> Result<(), RemoveSelfResponse> {
         self.response_tx.send(response)
     }
+}
+
+
+pub fn handle_removeself(
+    request: RemoveSelf,
+    user_tx: mpsc::Sender<UserRequest>,
+    sink: FlpcSink,
+) {
+    todo!();
 }

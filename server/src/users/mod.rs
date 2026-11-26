@@ -2,14 +2,14 @@ use sqlx::PgPool;
 use tokio::sync::mpsc;
 
 use crate::users::registration::{RegRequest, RegResponse};
-use crate::users::remove::{RemoveRequest, RemoveResponse};
+use crate::users::remove::{RemoveSelfRequest, RemoveSelfResponse};
 
 mod registration;
 mod remove;
 
 pub enum UserRequest {
     RegRequest(RegRequest),
-    RemoveRequest(RemoveRequest),
+    RemoveSelfRequest(RemoveSelfRequest),
 }
 
 pub struct UserHandler {
@@ -31,7 +31,7 @@ impl UserHandler {
                         .await;
                     let _ = request.try_send(response);
                 }
-                UserRequest::RemoveRequest(_) => {
+                UserRequest::RemoveSelfRequest(_) => {
                     todo!();
                 }
             }
@@ -63,7 +63,7 @@ impl UserHandler {
         }
     }
 
-    async fn removeself_user(&self, username: &str, hashed_password: &str) -> RemoveResponse {
+    async fn removeself_user(&self, username: &str, hashed_password: &str) -> RemoveSelfResponse {
         let removal =
             sqlx::query_as::<_, (Option<bool>, bool)>(include_str!("queries/removeself_user.sql"))
                 .bind(username)
@@ -72,10 +72,11 @@ impl UserHandler {
                 .await;
 
         match removal {
-            Ok((None, false)) => RemoveResponse::UserNotFound,
-            Ok((Some(false), false)) => RemoveResponse::WrongCredentials,
-            Ok((Some(true), true)) => RemoveResponse::Success,
-            _ => RemoveResponse::HandlerError,
+            Ok((None, false)) => RemoveSelfResponse::UserNotFound,
+            Ok((Some(false), false)) => RemoveSelfResponse::WrongCredentials,
+            // shortcut: the query returns only a boolean until it can return the deleted ID.
+            Ok((Some(true), true)) => RemoveSelfResponse::Success(0),
+            _ => RemoveSelfResponse::HandlerError,
         }
     }
 }

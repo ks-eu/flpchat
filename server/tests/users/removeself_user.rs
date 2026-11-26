@@ -3,7 +3,7 @@ use tokio::sync::mpsc;
 use crate::database::serial_tests::postgres_test;
 
 use super::transaction_pool::transaction_pool;
-use super::{PgPool, RegResponse, RemoveResponse, UserHandler};
+use super::{PgPool, RegResponse, RemoveSelfResponse, UserHandler};
 
 const FIXTURE_HASH: &str = "fixture-hash";
 
@@ -25,7 +25,7 @@ postgres_test! {
 
         assert!(matches!(
             handler.removeself_user(username, FIXTURE_HASH).await,
-            RemoveResponse::Success
+            RemoveSelfResponse::Success(_)
         ));
 
         let counts = sqlx::query_as::<_, (i64, i64, i64)>(
@@ -74,7 +74,7 @@ postgres_test! {
 
         assert!(matches!(
             handler.removeself_user(username, FIXTURE_HASH).await,
-            RemoveResponse::Success
+            RemoveSelfResponse::Success(_)
         ));
 
         let public_messages = sqlx::query_as::<_, (i32, i32, String)>(
@@ -129,7 +129,7 @@ postgres_test! {
         assert_eq!(removed_id, 1);
         assert!(matches!(
             handler.removeself_user(username, FIXTURE_HASH).await,
-            RemoveResponse::Success
+            RemoveSelfResponse::Success(_)
         ));
 
         let new_username = "replacement_user";
@@ -168,7 +168,7 @@ postgres_test! {
 
         assert!(matches!(
             handler.removeself_user("missing_user", FIXTURE_HASH).await,
-            RemoveResponse::UserNotFound
+            RemoveSelfResponse::UserNotFound
         ));
         let available_ids =
             sqlx::query_scalar::<_, i32>("SELECT user_id FROM available_user_ids ORDER BY user_id")
@@ -178,11 +178,11 @@ postgres_test! {
 
         assert!(matches!(
             handler.removeself_user(username, FIXTURE_HASH).await,
-            RemoveResponse::Success
+            RemoveSelfResponse::Success(_)
         ));
         assert!(matches!(
             handler.removeself_user(username, FIXTURE_HASH).await,
-            RemoveResponse::UserNotFound
+            RemoveSelfResponse::UserNotFound
         ));
         let available_ids =
             sqlx::query_scalar::<_, i32>("SELECT user_id FROM available_user_ids ORDER BY user_id")
@@ -221,7 +221,7 @@ postgres_test! {
 
         assert!(matches!(
             handler.removeself_user(username, other_hash).await,
-            RemoveResponse::WrongCredentials
+            RemoveSelfResponse::WrongCredentials
         ));
 
         let state = sqlx::query_as::<_, (bool, bool, bool, bool, bool, bool)>(
@@ -282,7 +282,7 @@ postgres_test! {
         sqlx::query("ROLLBACK TO SAVEPOINT removal_attempt")
             .execute(&pool)
             .await?;
-        assert!(matches!(response, RemoveResponse::HandlerError));
+        assert!(matches!(response, RemoveSelfResponse::HandlerError));
         let surviving_rows = sqlx::query_as::<_, (bool, bool, bool, bool, bool)>(
             "SELECT EXISTS (SELECT 1 FROM users WHERE user_id = $1 AND username = $3),
                     EXISTS (SELECT 1 FROM user_information WHERE user_id = $1 AND username = $3),
