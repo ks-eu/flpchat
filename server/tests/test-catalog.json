@@ -15,6 +15,10 @@
     "hash-password": {
       "title": "hash_password",
       "inputs": "password: &str, hash_permit: Arc<Semaphore>"
+    },
+    "user-handler-run": {
+      "title": "UserHandler::run",
+      "inputs": "self"
     }
   },
   "cases": {
@@ -169,6 +173,86 @@
       "alias": "Verifies the timing password",
       "input": "verify_password(\"timing-password\", precomputed hash)",
       "expected": "Ok(true) for each call; report 20 measured samples in milliseconds."
+    },
+    "database::users::user_handler_tests::worker_reg_new": {
+      "id": "worker-reg-new",
+      "component": "user-handler-run",
+      "suite": "regular",
+      "alias": "Registers a new username",
+      "input": "IDs=[7], RegRequest(\"new-user\", \"new-hash\")",
+      "expected": "Success(7). Account 7 stores \"new-hash\"."
+    },
+    "database::users::user_handler_tests::worker_reg_same_hash": {
+      "id": "worker-reg-same-hash",
+      "component": "user-handler-run",
+      "suite": "regular",
+      "alias": "Rejects the same username and hash",
+      "input": "account(7, \"taken\", \"old-hash\"), IDs=[8], RegRequest(\"taken\", \"old-hash\")",
+      "expected": "UsernameExists. Account 7 and ID 8 stay unchanged."
+    },
+    "database::users::user_handler_tests::worker_reg_different_hash": {
+      "id": "worker-reg-different-hash",
+      "component": "user-handler-run",
+      "suite": "regular",
+      "alias": "Rejects the same username with a different hash",
+      "input": "account(7, \"taken\", \"old-hash\"), IDs=[8], RegRequest(\"taken\", \"different-hash\")",
+      "expected": "UsernameExists. Stored hash remains \"old-hash\"; ID 8 stays available."
+    },
+    "database::users::user_handler_tests::worker_reg_reused_hash": {
+      "id": "worker-reg-reused-hash",
+      "component": "user-handler-run",
+      "suite": "regular",
+      "alias": "Accepts a new username with an existing hash",
+      "input": "account(7, \"taken\", \"old-hash\"), IDs=[8], RegRequest(\"new-user\", \"old-hash\")",
+      "expected": "Success(8). Both accounts store \"old-hash\"."
+    },
+    "database::users::user_handler_tests::worker_reg_full": {
+      "id": "worker-reg-full",
+      "component": "user-handler-run",
+      "suite": "regular",
+      "alias": "Reports exhausted IDs",
+      "input": "IDs=[], RegRequest(\"new-user\", \"new-hash\")",
+      "expected": "NotEnoughSpace. No account or profile created."
+    },
+    "database::users::user_handler_tests::worker_remove_match": {
+      "id": "worker-remove-match",
+      "component": "user-handler-run",
+      "suite": "regular",
+      "alias": "Removes with correct credentials",
+      "input": "account(7, \"target\", H(\"secret\")), RemoveSelfRequest(\"target\", \"secret\")",
+      "expected": "Success(7). Account 7 and its profile are gone."
+    },
+    "database::users::user_handler_tests::worker_remove_wrong": {
+      "id": "worker-remove-wrong",
+      "component": "user-handler-run",
+      "suite": "regular",
+      "alias": "Rejects a wrong password",
+      "input": "account(7, \"target\", H(\"secret\")), RemoveSelfRequest(\"target\", \"wrong\")",
+      "expected": "WrongCredentials. Account 7 and its profile remain."
+    },
+    "database::users::user_handler_tests::worker_remove_missing": {
+      "id": "worker-remove-missing",
+      "component": "user-handler-run",
+      "suite": "regular",
+      "alias": "Reports a missing user",
+      "input": "account(7, \"target\", H(\"secret\")), RemoveSelfRequest(\"absent\", \"secret\")",
+      "expected": "UserNotFound. Account 7 stays intact."
+    },
+    "database::users::user_handler_tests::worker_reply_dropped": {
+      "id": "worker-reply-dropped",
+      "component": "user-handler-run",
+      "suite": "regular",
+      "alias": "Continues after a dropped reply receiver",
+      "input": "IDs=[7,8]. Queue RegRequest(\"first\", \"first-hash\"), drop its reply receiver, then queue RegRequest(\"second\", \"second-hash\").",
+      "expected": "Both accounts are inserted. The second caller receives Success(8)."
+    },
+    "database::users::user_handler_tests::worker_drain": {
+      "id": "worker-drain",
+      "component": "user-handler-run",
+      "suite": "regular",
+      "alias": "Drains the queue before shutdown",
+      "input": "IDs=[7], queue RegRequest(\"queued\", \"queued-hash\"), then close all request senders before running the worker.",
+      "expected": "The caller receives Success(7) and run returns within the test timeout."
     }
   }
 }
