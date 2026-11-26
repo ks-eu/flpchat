@@ -1,10 +1,6 @@
-use std::error::Error;
-use std::sync::Arc;
-
 use tokio::sync::{
     oneshot,
     mpsc,
-    Semaphore,
 };
 use tokio::net::TcpStream;
 use tokio_util::codec::Framed;
@@ -73,7 +69,17 @@ pub async fn handle_removeself(
     max_len_username: usize,
     max_len_password: usize,
 ) {
-    todo!();
+    let code = if check_length(&request, max_len_username, max_len_password) {
+        2
+    } else {
+        match try_remove(request.username(), request.password(), user_tx).await {
+            RemoveSelfResponse::Success(_) => 0,
+            RemoveSelfResponse::WrongCredentials => 1,
+            RemoveSelfResponse::UserNotFound => 3,
+            RemoveSelfResponse::HandlerError => 4,
+        }
+    };
+    let _ = send_serverremoveself(code, sink).await;
 }
 
 fn check_length(
@@ -81,7 +87,10 @@ fn check_length(
     max_len_username: usize,
     max_len_password: usize,
 ) -> bool {
-    todo!("validate removal credential lengths");
+    request.username().is_empty()
+        || request.username().len() > max_len_username
+        || request.password().is_empty()
+        || request.password().len() > max_len_password
 }
 
 async fn try_remove(
@@ -89,14 +98,20 @@ async fn try_remove(
     password: &str,
     user_tx: mpsc::Sender<UserRequest>,
 ) -> RemoveSelfResponse {
-    todo!("send removal request and await reply");
+    let (response_tx, response_rx) = oneshot::channel();
+    let request = RemoveSelfRequest::new(username.to_owned(), password.to_owned(), response_tx);
+    if user_tx.send(UserRequest::RemoveSelfRequest(request)).await.is_err() {
+        return RemoveSelfResponse::HandlerError;
+    }
+
+    response_rx.await.unwrap_or(RemoveSelfResponse::HandlerError)
 }
 
 async fn send_serverremoveself(
     code: u8,
-    sink: FlpcSink,
+    mut sink: FlpcSink,
 ) -> Result<(), CodecError> {
-    todo!("send removal result frame");
+    sink.send(ServerRemoveSelf::new(code).into()).await
 }
 
 #[cfg(test)]
