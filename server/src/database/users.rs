@@ -3,9 +3,9 @@ use std::sync::Arc;
 
 use sqlx::PgPool;
 use tokio::sync::{mpsc, Semaphore};
-use argon2::{Argon2, PasswordVerifier, PasswordHash, password_hash};
 use crate::users::registration::{RegRequest, RegResponse};
 use crate::users::remove::{RemoveSelfRequest, RemoveSelfResponse};
+use crate::hashing::verify_password;
 
 pub enum UserRequest {
     RegRequest(RegRequest),
@@ -142,22 +142,10 @@ impl UserHandler {
         let password = password.to_owned();
         let verify = tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            let parsed_hash = match PasswordHash::new(&hashed_password) {
-                Ok(parsed_hash) => parsed_hash,
-                Err(_) => {
-                    return Err(VerifyError::Argon2Error)
-                }
-            };
-            match Argon2::default().verify_password(password.as_bytes(), &parsed_hash) {
-                Ok(()) => {
-                    return Ok(VerifyResult::Success(hashed_password))
-                }
-                Err(password_hash::Error::PasswordInvalid) => {
-                    return Ok(VerifyResult::WrongCredentials)
-                }
-                Err(_) => {
-                    return Err(VerifyError::Argon2Error)
-                }
+            match verify_password(&password, &hashed_password) {
+                Ok(true) => Ok(VerifyResult::Success(hashed_password)),
+                Ok(false) => Ok(VerifyResult::WrongCredentials),
+                Err(_) => Err(VerifyError::Argon2Error),
             }
         }).await;
 
