@@ -1,6 +1,6 @@
 use crate::database::serial_tests::postgres_test;
 
-use super::transaction_pool::transaction_pool;
+use super::transaction_pool::{delete_completed, track_completed_deletes, transaction_pool};
 use super::{PgPool, RegResponse, RemoveResponse, UserHandler, remove_user};
 
 async fn register_user(pool: &PgPool, username: &str) -> u16 {
@@ -175,6 +175,64 @@ postgres_test! {
                 .fetch_all(&pool)
                 .await?;
         assert_eq!(available_ids, [1, 2]);
+
+        sqlx::query("ROLLBACK").execute(&pool).await?;
+        Ok(())
+    }
+}
+
+postgres_test! {
+    async fn remove_user_keeps_dependent_rows_if_returning_id_fails(pool: PgPool) -> sqlx::Result<()> {
+        let pool = transaction_pool(&pool).await?;
+        let removed_id = register_user(&pool, "release_conflict").await;
+        let user_id = i32::from(removed_id);
+        let other_user_id = i32::from(register_user(&pool, "other_user").await);
+
+        sqlx::query(
+            "INSERT INTO messages (message_id, user_id, message) VALUES (11, $1, 'public message')",
+        )
+        .bind(user_id)
+        .execute(&pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO private_messages (privatemessage_id, user_id, target_id, message)
+             VALUES (21, $1, $2, 'outgoing message'), (22, $2, $1, 'incoming message')",
+        )
+        .bind(user_id)
+        .bind(other_user_id)
+        .execute(&pool)
+        .await?;
+        sqlx::query("INSERT INTO available_user_ids (user_id) VALUES ($1)")
+            .bind(user_id)
+            .execute(&pool)
+            .await?;
+
+        track_completed_deletes(&pool, "users").await?;
+        sqlx::query("SAVEPOINT removal_attempt")
+            .execute(&pool)
+            .await?;
+        let response = remove_user(&pool, removed_id).await;
+        sqlx::query("ROLLBACK TO SAVEPOINT removal_attempt")
+            .execute(&pool)
+            .await?;
+        assert!(matches!(response, RemoveResponse::HandlerError));
+        assert!(
+            !delete_completed(&pool).await?,
+            "user deletion completed before the ID release error"
+        );
+
+        let surviving_rows = sqlx::query_as::<_, (bool, bool, bool, bool, bool)>(
+            "SELECT EXISTS (SELECT 1 FROM users WHERE user_id = $1 AND username = 'release_conflict'),
+                    EXISTS (SELECT 1 FROM user_information WHERE user_id = $1 AND username = 'release_conflict'),
+                    EXISTS (SELECT 1 FROM messages WHERE message_id = 11 AND user_id = $1),
+                    EXISTS (SELECT 1 FROM private_messages WHERE privatemessage_id = 21 AND user_id = $1 AND target_id = $2),
+                    EXISTS (SELECT 1 FROM private_messages WHERE privatemessage_id = 22 AND user_id = $2 AND target_id = $1)",
+        )
+        .bind(user_id)
+        .bind(other_user_id)
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(surviving_rows, (true, true, true, true, true));
 
         sqlx::query("ROLLBACK").execute(&pool).await?;
         Ok(())

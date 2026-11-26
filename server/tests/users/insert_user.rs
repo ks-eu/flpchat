@@ -1,5 +1,6 @@
 use crate::database::serial_tests::postgres_test;
 
+use super::transaction_pool::{delete_completed, track_completed_deletes};
 use super::{PgPool, RegResponse, UserHandler};
 
 postgres_test! {
@@ -220,22 +221,7 @@ postgres_test! {
         .execute(&mut *tx)
         .await?;
 
-        // A temporary sequence can record completed DELETEs across savepoint rollback.
-        sqlx::raw_sql(
-            "CREATE TEMP SEQUENCE completed_id_deletes;
-             CREATE FUNCTION pg_temp.record_completed_id_delete() RETURNS trigger
-             LANGUAGE plpgsql AS $$
-             BEGIN
-                 PERFORM nextval('pg_temp.completed_id_deletes');
-                 RETURN NULL;
-             END;
-             $$;
-             CREATE TRIGGER record_completed_id_delete
-             AFTER DELETE ON available_user_ids FOR EACH STATEMENT
-             EXECUTE FUNCTION pg_temp.record_completed_id_delete();",
-        )
-        .execute(&mut *tx)
-        .await?;
+        track_completed_deletes(&mut *tx, "available_user_ids").await?;
 
         let mut attempt = sqlx::Acquire::begin(&mut tx).await?;
         let response =
@@ -243,11 +229,10 @@ postgres_test! {
         attempt.rollback().await?;
         assert!(matches!(response, RegResponse::HandlerError));
 
-        let id_delete_completed =
-            sqlx::query_scalar::<_, bool>("SELECT is_called FROM pg_temp.completed_id_deletes")
-                .fetch_one(&mut *tx)
-                .await?;
-        assert!(!id_delete_completed, "ID deletion completed before the profile error");
+        assert!(
+            !delete_completed(&mut *tx).await?,
+            "ID deletion completed before the profile error"
+        );
 
         let row_counts = sqlx::query_as::<_, (i64, i64)>(
             "SELECT (SELECT count(*) FROM users), (SELECT count(*) FROM user_information)",
