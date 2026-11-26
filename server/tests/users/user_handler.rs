@@ -17,10 +17,10 @@ use tokio::{
 use tokio_util::codec::Framed;
 
 use crate::database::serial_tests::postgres_test;
+use crate::users::registration::handle_register;
 
 use super::{
-    PgPool, RegRequest, RegResponse, UserHandler, UserRequest, registration::handle_register,
-    transaction_pool::transaction_pool,
+    PgPool, RegRequest, RegResponse, UserHandler, UserRequest, transaction_pool::transaction_pool,
 };
 
 postgres_test! {

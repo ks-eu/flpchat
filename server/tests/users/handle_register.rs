@@ -17,7 +17,7 @@ use tokio::{
 use tokio_util::codec::Framed;
 
 use super::{RegRequest, RegResponse, handle_register};
-use crate::users::UserRequest;
+use crate::database::users::UserRequest;
 
 const SERVER_TOKEN: &str = "server-token";
 const MAX_USERNAME_BYTES: usize = 4;

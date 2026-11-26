@@ -7,15 +7,15 @@ use crate::database::serial_tests::postgres_test;
 const SAMPLE_COUNT: usize = 20;
 const EXPLAIN_INSERT: &str = concat!(
     "EXPLAIN (ANALYZE, TIMING OFF, FORMAT JSON) ",
-    include_str!("../../src/users/queries/insert_user.sql"),
+    include_str!("../../src/database/queries/insert_user.sql"),
 );
 const EXPLAIN_REMOVE: &str = concat!(
     "EXPLAIN (ANALYZE, TIMING OFF, FORMAT JSON) ",
-    include_str!("../../src/users/queries/remove_user.sql"),
+    include_str!("../../src/database/queries/remove_user.sql"),
 );
 const EXPLAIN_REMOVESELF: &str = concat!(
     "EXPLAIN (ANALYZE, TIMING OFF, FORMAT JSON) ",
-    include_str!("../../src/users/queries/removeself_user.sql"),
+    include_str!("../../src/database/queries/removeself_user.sql"),
 );
 const VERIFY_REMOVAL_WITH_MESSAGE_HISTORY: &str =
     "SELECT EXISTS (SELECT 1 FROM available_user_ids WHERE user_id = 1)

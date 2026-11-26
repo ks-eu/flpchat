@@ -13,8 +13,8 @@ fail() {
 }
 
 case "$#:${1-}" in
-    0:) test_args=(--include-ignored --skip users::query_performance_tests::) ;;
-    1:--performance) test_args=(--ignored --nocapture users::query_performance_tests::) ;;
+    0:) test_args=(--include-ignored --skip database::users::query_performance_tests::) ;;
+    1:--performance) test_args=(--ignored --nocapture database::users::query_performance_tests::) ;;
     *) fail "Usage: $0 [--performance]" ;;
 esac
 

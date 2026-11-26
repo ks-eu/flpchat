@@ -18,7 +18,7 @@ use flpc::unit::{
 };
 use flpc::tokio::{CodecError, FlpcCodec};
 
-use crate::users::UserRequest;
+use crate::database::users::UserRequest;
 
 
 type FlpcSink = SplitSink<Framed<TcpStream, FlpcCodec>, FlpcUnit>;

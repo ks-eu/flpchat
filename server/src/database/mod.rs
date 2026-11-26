@@ -2,6 +2,8 @@ use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 use std::time::Duration;
 
+pub(crate) mod users;
+
 pub async fn create_pool() -> Result<PgPool, sqlx::Error> {
     let database_url = std::env::var("DATABASE_URL")
         .expect("DATABASE_URL must be set");
