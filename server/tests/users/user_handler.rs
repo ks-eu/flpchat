@@ -11,7 +11,7 @@ use flpc::{
 use futures_util::StreamExt;
 use tokio::{
     net::{TcpListener, TcpStream},
-    sync::{Semaphore, mpsc},
+    sync::{Semaphore, mpsc, oneshot},
     time::timeout,
 };
 use tokio_util::codec::Framed;
@@ -19,7 +19,8 @@ use tokio_util::codec::Framed;
 use crate::database::serial_tests::postgres_test;
 
 use super::{
-    PgPool, UserHandler, registration::handle_register, transaction_pool::transaction_pool,
+    PgPool, RegRequest, RegResponse, UserHandler, UserRequest, registration::handle_register,
+    transaction_pool::transaction_pool,
 };
 
 postgres_test! {
@@ -82,6 +83,56 @@ postgres_test! {
                 .fetch_one(&pool)
                 .await?;
         assert_eq!(profile_id, user_id);
+
+        sqlx::query("ROLLBACK").execute(&pool).await?;
+        Ok(())
+    }
+}
+
+fn queue_registration(
+    user_tx: &mpsc::Sender<UserRequest>,
+    username: &str,
+    hash: &str,
+) -> oneshot::Receiver<RegResponse> {
+    let (reply_tx, reply_rx) = oneshot::channel();
+    let request = RegRequest::new(username.into(), hash.into(), reply_tx);
+    assert!(user_tx.try_send(UserRequest::RegRequest(request)).is_ok());
+    reply_rx
+}
+
+postgres_test! {
+    async fn worker_continues_after_registration_reply_receiver_is_dropped(
+        pool: PgPool,
+    ) -> sqlx::Result<()> {
+        let pool = transaction_pool(&pool).await?;
+        let (user_tx, user_rx) = mpsc::channel(2);
+        drop(queue_registration(&user_tx, "first-user", "first-hash"));
+        let reply = queue_registration(&user_tx, "second-user", "second-hash");
+
+        let worker = UserHandler::new(pool.clone(), user_rx);
+        let ((), reply) = timeout(Duration::from_secs(5), async {
+            tokio::join!(worker.run(), async move {
+                let result = reply.await;
+                drop(user_tx);
+                result
+            })
+        })
+        .await
+        .expect("worker should process both registrations");
+        assert!(matches!(reply, Ok(RegResponse::Success(_))));
+
+        let accounts = sqlx::query_as::<_, (String, String)>(
+            "SELECT username, password_hash FROM users ORDER BY username",
+        )
+        .fetch_all(&pool)
+        .await?;
+        assert_eq!(
+            accounts,
+            [
+                ("first-user".to_owned(), "first-hash".to_owned()),
+                ("second-user".to_owned(), "second-hash".to_owned()),
+            ],
+        );
 
         sqlx::query("ROLLBACK").execute(&pool).await?;
         Ok(())
