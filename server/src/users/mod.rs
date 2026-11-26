@@ -46,37 +46,12 @@ impl UserHandler {
         username: &str,
         hashed_password: &str,
     ) -> RegResponse {
-        let registration = sqlx::query_as::<_, (bool, Option<i32>)>(
-            "WITH username_check AS (
-                 SELECT EXISTS (
-                     SELECT 1 FROM users WHERE username = $1
-                 ) AS username_exists
-             ), claimed_id AS (
-                 DELETE FROM available_user_ids
-                 WHERE user_id = (
-                     SELECT user_id FROM available_user_ids
-                     WHERE NOT (SELECT username_exists FROM username_check)
-                     ORDER BY user_id LIMIT 1 FOR UPDATE
-                 )
-                 RETURNING user_id
-             ), inserted_user AS (
-                 INSERT INTO users (user_id, username, password_hash)
-                 OVERRIDING SYSTEM VALUE
-                 SELECT user_id, $1, $2 FROM claimed_id
-                 RETURNING user_id, username
-             ), inserted_profile AS (
-                 INSERT INTO user_information (user_id, username, user_created)
-                 SELECT user_id, username, date_trunc('milliseconds', statement_timestamp())
-                 FROM inserted_user
-                 RETURNING user_id
-             )
-             SELECT username_exists, (SELECT user_id FROM inserted_profile)
-             FROM username_check",
-        )
-        .bind(username)
-        .bind(hashed_password)
-        .fetch_one(executor)
-        .await;
+        let registration =
+            sqlx::query_as::<_, (bool, Option<i32>)>(include_str!("queries/insert_user.sql"))
+                .bind(username)
+                .bind(hashed_password)
+                .fetch_one(executor)
+                .await;
 
         match registration {
             Ok((true, _)) => RegResponse::UsernameExists,
@@ -97,16 +72,10 @@ impl UserHandler {
 }
 
 pub async fn remove_user(pool: &PgPool, user_id: u16) -> RemoveResponse {
-    let removal = sqlx::query(
-        "WITH removed_user AS (
-             DELETE FROM users WHERE user_id = $1 RETURNING user_id
-         )
-         INSERT INTO available_user_ids (user_id)
-         SELECT user_id FROM removed_user",
-    )
-    .bind(i32::from(user_id))
-    .execute(pool)
-    .await;
+    let removal = sqlx::query(include_str!("queries/remove_user.sql"))
+        .bind(i32::from(user_id))
+        .execute(pool)
+        .await;
 
     match removal {
         Ok(result) if result.rows_affected() == 1 => RemoveResponse::Success,
@@ -130,3 +99,7 @@ mod remove_user_tests;
 #[cfg(test)]
 #[path = "../../tests/users/user_handler.rs"]
 mod user_handler_tests;
+
+#[cfg(test)]
+#[path = "../../tests/users/query_performance.rs"]
+mod query_performance_tests;

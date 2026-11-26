@@ -12,6 +12,12 @@ fail() {
     exit 1
 }
 
+case "$#:${1-}" in
+    0:) test_args=(--include-ignored --skip users::query_performance_tests::) ;;
+    1:--performance) test_args=(--ignored --nocapture users::query_performance_tests::) ;;
+    *) fail "Usage: $0 [--performance]" ;;
+esac
+
 port_listeners() {
     ss -H -ltnp "sport = :$port"
 }
@@ -112,4 +118,4 @@ while ! "${podman_local[@]}" exec "$container" pg_isready -h 127.0.0.1 -U "$data
 done
 
 DATABASE_URL="postgresql://$database:$database@127.0.0.1:$port/$database" \
-    cargo test --locked -p server -- --include-ignored
+    cargo test --locked -p server -- "${test_args[@]}"
