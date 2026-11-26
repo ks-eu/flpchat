@@ -142,7 +142,9 @@ fn check_length (
     max_len_password: usize,
 ) -> bool {
     if request.username().len() > max_len_username ||
-       request.password().len() > max_len_password {
+       request.username().len() == 0               ||
+       request.password().len() > max_len_password ||
+       request.password().len() == 0 {
         true
     } else {
         false

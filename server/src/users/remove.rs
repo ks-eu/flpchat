@@ -30,7 +30,6 @@ pub enum RemoveResponse {
     HandlerError,
 }
 
-
 pub struct RemoveRequest {
     id: u16,
     response_tx: oneshot::Sender<RemoveResponse>,
