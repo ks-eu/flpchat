@@ -1,7 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
 use argon2::{
-    Argon2,
+    Argon2, PasswordHasher,
     password_hash::{PasswordVerifier, phc::PasswordHash},
 };
 use flpc::{
@@ -20,7 +20,8 @@ use crate::database::serial_tests::postgres_test;
 use crate::users::registration::handle_register;
 
 use super::{
-    PgPool, RegRequest, RegResponse, UserHandler, UserRequest, transaction_pool::transaction_pool,
+    PgPool, RegRequest, RegResponse, RemoveSelfRequest, RemoveSelfResponse, UserHandler,
+    UserRequest, transaction_pool::transaction_pool,
 };
 
 postgres_test! {
@@ -99,6 +100,66 @@ fn queue_registration(
     let request = RegRequest::new(username.into(), hash.into(), reply_tx);
     assert!(user_tx.try_send(UserRequest::RegRequest(request)).is_ok());
     reply_rx
+}
+
+fn queue_removal(
+    user_tx: &mpsc::Sender<UserRequest>,
+    username: &str,
+    password: &str,
+) -> oneshot::Receiver<RemoveSelfResponse> {
+    let (reply_tx, reply_rx) = oneshot::channel();
+    let request = RemoveSelfRequest::new(username.into(), password.into(), reply_tx);
+    assert!(
+        user_tx
+            .try_send(UserRequest::RemoveSelfRequest(request))
+            .is_ok()
+    );
+    reply_rx
+}
+
+postgres_test! {
+    async fn worker_routes_registrations_and_all_removal_outcomes(pool: PgPool) -> sqlx::Result<()> {
+        let pool = transaction_pool(&pool).await?;
+        let password = "café🔑";
+        let hash = Argon2::default().hash_password(password.as_bytes()).unwrap().to_string();
+        let (user_tx, user_rx) = mpsc::channel(7);
+        let registration = queue_registration(&user_tx, "target", &hash);
+        let malformed_registration = queue_registration(&user_tx, "malformed", "invalid-phc");
+        let missing = queue_removal(&user_tx, "missing", password);
+        let wrong = queue_removal(&user_tx, "target", "wrong-password");
+        let error = queue_removal(&user_tx, "malformed", password);
+        let success = queue_removal(&user_tx, "target", password);
+        let already_removed = queue_removal(&user_tx, "target", password);
+        drop(user_tx);
+
+        let worker = UserHandler::new(pool.clone(), user_rx, Arc::new(Semaphore::new(1)));
+        timeout(Duration::from_secs(10), worker.run())
+            .await
+            .expect("worker should drain mixed requests and exit");
+
+        let Ok(RegResponse::Success(registered_id)) = registration.await else {
+            panic!("worker should register the account");
+        };
+        assert!(matches!(malformed_registration.await, Ok(RegResponse::Success(_))));
+        assert!(matches!(missing.await, Ok(RemoveSelfResponse::UserNotFound)));
+        assert!(matches!(wrong.await, Ok(RemoveSelfResponse::WrongCredentials)));
+        assert!(matches!(error.await, Ok(RemoveSelfResponse::HandlerError)));
+        assert!(matches!(
+            success.await,
+            Ok(RemoveSelfResponse::Success(removed_id)) if removed_id == registered_id
+        ));
+        assert!(matches!(already_removed.await, Ok(RemoveSelfResponse::UserNotFound)));
+
+        let accounts = sqlx::query_as::<_, (String, String)>(
+            "SELECT username, password_hash FROM users",
+        )
+        .fetch_all(&pool)
+        .await?;
+        assert_eq!(accounts, [("malformed".to_owned(), "invalid-phc".to_owned())]);
+
+        sqlx::query("ROLLBACK").execute(&pool).await?;
+        Ok(())
+    }
 }
 
 postgres_test! {

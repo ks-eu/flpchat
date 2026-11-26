@@ -1,11 +1,12 @@
 use std::sync::Arc;
 
+use argon2::{Argon2, PasswordHasher};
 use tokio::sync::{Semaphore, mpsc};
 
 use crate::database::serial_tests::postgres_test;
 
 use super::transaction_pool::transaction_pool;
-use super::{PgPool, RegResponse, RemoveSelfResponse, UserHandler};
+use super::{PgPool, RegResponse, RemoveSelfResponse, UserHandler, VerifyError, VerifyResult};
 
 const FIXTURE_HASH: &str = "fixture-hash";
 
@@ -14,6 +15,110 @@ async fn register_user(handler: &UserHandler, username: &str, hashed_password: &
         panic!("failed to register fixture user {username}");
     };
     user_id
+}
+
+postgres_test! {
+    async fn get_hashed_password_matches_exact_username(pool: PgPool) -> sqlx::Result<()> {
+        let pool = transaction_pool(&pool).await?;
+        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1, Arc::new(Semaphore::new(1)));
+        register_user(&handler, "O'Reilly", FIXTURE_HASH).await;
+        register_user(&handler, "o'reilly", "other-hash").await;
+
+        assert_eq!(
+            handler.get_hashed_password("O'Reilly").await?.as_deref(),
+            Some(FIXTURE_HASH)
+        );
+        assert_eq!(
+            handler.get_hashed_password("o'reilly").await?.as_deref(),
+            Some("other-hash")
+        );
+        assert_eq!(handler.get_hashed_password("O'Reill").await?, None);
+
+        sqlx::query("ROLLBACK").execute(&pool).await?;
+        Ok(())
+    }
+}
+
+postgres_test! {
+    async fn verify_credentials_requires_exact_password_bytes(pool: PgPool) -> sqlx::Result<()> {
+        let pool = transaction_pool(&pool).await?;
+        let permit = Arc::new(Semaphore::new(1));
+        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1, Arc::clone(&permit));
+        let password = "café🔑";
+        let hash = Argon2::default().hash_password(password.as_bytes()).unwrap().to_string();
+        register_user(&handler, "account", &hash).await;
+
+        assert!(matches!(
+            handler.verify_credentials("account", password).await,
+            Ok(VerifyResult::Success(stored_hash)) if stored_hash == hash
+        ));
+        assert_eq!(permit.available_permits(), 1);
+        assert!(matches!(
+            handler.verify_credentials("account", "cafe\u{301}🔑").await,
+            Ok(VerifyResult::WrongCredentials)
+        ));
+        assert_eq!(permit.available_permits(), 1);
+        assert!(matches!(
+            handler.verify_credentials("account", &hash).await,
+            Ok(VerifyResult::WrongCredentials)
+        ));
+        assert!(matches!(
+            handler.verify_credentials("absent", password).await,
+            Ok(VerifyResult::UsernameNotFound)
+        ));
+
+        sqlx::query("ROLLBACK").execute(&pool).await?;
+        Ok(())
+    }
+}
+
+postgres_test! {
+    async fn verify_credentials_distinguishes_hash_permit_and_lookup_errors(
+        pool: PgPool,
+    ) -> sqlx::Result<()> {
+        let pool = transaction_pool(&pool).await?;
+        let permit = Arc::new(Semaphore::new(1));
+        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1, Arc::clone(&permit));
+        let password = "password";
+        let hash = Argon2::default().hash_password(password.as_bytes()).unwrap().to_string();
+        let unsupported_hash = hash.replacen("$argon2id$", "$scrypt$", 1);
+        register_user(&handler, "malformed", FIXTURE_HASH).await;
+        register_user(&handler, "unsupported", &unsupported_hash).await;
+        register_user(&handler, "account", &hash).await;
+
+        for username in ["malformed", "unsupported"] {
+            assert!(
+                matches!(
+                    handler.verify_credentials(username, password).await,
+                    Err(VerifyError::Argon2Error)
+                ),
+                "expected an Argon2 error for {username}"
+            );
+            assert_eq!(permit.available_permits(), 1);
+        }
+
+        permit.close();
+        assert!(matches!(
+            handler.verify_credentials("account", password).await,
+            Err(VerifyError::PermitError)
+        ));
+        assert!(matches!(
+            handler.verify_credentials("absent", password).await,
+            Ok(VerifyResult::UsernameNotFound)
+        ));
+
+        sqlx::query("ROLLBACK").execute(&pool).await?;
+        pool.close().await;
+        assert!(matches!(
+            handler.get_hashed_password("account").await,
+            Err(sqlx::Error::PoolClosed)
+        ));
+        assert!(matches!(
+            handler.verify_credentials("account", password).await,
+            Err(VerifyError::SqlxError)
+        ));
+        Ok(())
+    }
 }
 
 postgres_test! {
