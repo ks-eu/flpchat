@@ -178,15 +178,29 @@ async fn handle_register_reports_worker_disconnects() {
 }
 
 #[tokio::test]
-async fn handle_register_accepts_empty_credentials() {
-    let (user_tx, mut user_rx) = mpsc::channel(1);
-    let request = Register::new(SERVER_TOKEN.into(), String::new(), String::new());
-    let code = registration_outcome(request, user_tx, Arc::new(Semaphore::new(1)), async {
-        let request = receive_registration(&mut user_rx).await;
-        assert_credentials(&request, "", "");
-        assert!(request.try_send(RegResponse::Success(1)).is_ok());
-    })
-    .await;
+async fn handle_register_rejects_empty_credentials() {
+    let cases = [
+        ("empty username", "", "valid"),
+        ("empty password", "user", ""),
+        ("empty username and password", "", ""),
+    ];
 
-    assert_eq!(code, 0);
+    for (scenario, username, password) in cases {
+        let (user_tx, mut user_rx) = mpsc::channel(1);
+        let mut reached_worker = false;
+        let request = Register::new(SERVER_TOKEN.into(), username.into(), password.into());
+        let code = registration_outcome(request, user_tx, Arc::new(Semaphore::new(1)), async {
+            if let Some(UserRequest::RegRequest(request)) = user_rx.recv().await {
+                reached_worker = true;
+                assert!(request.try_send(RegResponse::Success(1)).is_ok());
+            }
+        })
+        .await;
+
+        assert_eq!(
+            (code, reached_worker),
+            (2, false),
+            "{scenario}: expected code 2 and no worker request"
+        );
+    }
 }
