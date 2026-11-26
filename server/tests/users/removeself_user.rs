@@ -2,7 +2,7 @@ use tokio::sync::mpsc;
 
 use crate::database::serial_tests::postgres_test;
 
-use super::transaction_pool::{delete_completed, track_completed_deletes, transaction_pool};
+use super::transaction_pool::transaction_pool;
 use super::{PgPool, RegResponse, RemoveResponse, UserHandler};
 
 const FIXTURE_HASH: &str = "fixture-hash";
@@ -15,7 +15,7 @@ async fn register_user(handler: &UserHandler, username: &str, hashed_password: &
 }
 
 postgres_test! {
-    async fn removeself_user_deletes_account_and_profile_and_releases_id(
+    async fn removeself_user_deletes_account_and_profile_without_recycling_id(
         pool: PgPool,
     ) -> sqlx::Result<()> {
         let pool = transaction_pool(&pool).await?;
@@ -36,7 +36,7 @@ postgres_test! {
         .bind(i32::from(user_id))
         .fetch_one(&pool)
         .await?;
-        assert_eq!(counts, (0, 0, 1));
+        assert_eq!(counts, (0, 0, 0));
 
         sqlx::query("ROLLBACK").execute(&pool).await?;
         Ok(())
@@ -121,12 +121,12 @@ postgres_test! {
 }
 
 postgres_test! {
-    async fn insert_user_reuses_the_lowest_released_id(pool: PgPool) -> sqlx::Result<()> {
+    async fn insert_user_skips_removed_user_id(pool: PgPool) -> sqlx::Result<()> {
         let pool = transaction_pool(&pool).await?;
         let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
         let username = "original_user";
-        let released_id = register_user(&handler, username, FIXTURE_HASH).await;
-        assert_eq!(released_id, 1);
+        let removed_id = register_user(&handler, username, FIXTURE_HASH).await;
+        assert_eq!(removed_id, 1);
         assert!(matches!(
             handler.removeself_user(username, FIXTURE_HASH).await,
             RemoveResponse::Success
@@ -134,7 +134,7 @@ postgres_test! {
 
         let new_username = "replacement_user";
         let new_id = register_user(&handler, new_username, FIXTURE_HASH).await;
-        assert_eq!(new_id, released_id);
+        assert_eq!(new_id, 2);
 
         let account_and_profile = sqlx::query_as::<_, (String, String)>(
             "SELECT users.username, user_information.username
@@ -188,7 +188,7 @@ postgres_test! {
             sqlx::query_scalar::<_, i32>("SELECT user_id FROM available_user_ids ORDER BY user_id")
                 .fetch_all(&pool)
                 .await?;
-        assert_eq!(available_ids, [1, 2]);
+        assert_eq!(available_ids, [2]);
 
         sqlx::query("ROLLBACK").execute(&pool).await?;
         Ok(())
@@ -245,12 +245,10 @@ postgres_test! {
 }
 
 postgres_test! {
-    async fn removeself_user_keeps_dependent_rows_if_returning_id_fails(
-        pool: PgPool,
-    ) -> sqlx::Result<()> {
+    async fn removeself_user_keeps_dependent_rows_if_deletion_fails(pool: PgPool) -> sqlx::Result<()> {
         let pool = transaction_pool(&pool).await?;
         let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
-        let username = "release_conflict";
+        let username = "blocked_removal";
         let removed_id = register_user(&handler, username, FIXTURE_HASH).await;
         let user_id = i32::from(removed_id);
         let other_user_id = i32::from(register_user(&handler, "other_user", FIXTURE_HASH).await);
@@ -269,12 +267,14 @@ postgres_test! {
         .bind(other_user_id)
         .execute(&pool)
         .await?;
-        sqlx::query("INSERT INTO available_user_ids (user_id) VALUES ($1)")
+        sqlx::query("CREATE TABLE removal_guard (user_id INTEGER REFERENCES users (user_id))")
+            .execute(&pool)
+            .await?;
+        sqlx::query("INSERT INTO removal_guard (user_id) VALUES ($1)")
             .bind(user_id)
             .execute(&pool)
             .await?;
 
-        track_completed_deletes(&pool, "users").await?;
         sqlx::query("SAVEPOINT removal_attempt")
             .execute(&pool)
             .await?;
@@ -283,20 +283,16 @@ postgres_test! {
             .execute(&pool)
             .await?;
         assert!(matches!(response, RemoveResponse::HandlerError));
-        assert!(
-            !delete_completed(&pool).await?,
-            "user deletion completed before the ID release error"
-        );
-
         let surviving_rows = sqlx::query_as::<_, (bool, bool, bool, bool, bool)>(
-            "SELECT EXISTS (SELECT 1 FROM users WHERE user_id = $1 AND username = 'release_conflict'),
-                    EXISTS (SELECT 1 FROM user_information WHERE user_id = $1 AND username = 'release_conflict'),
+            "SELECT EXISTS (SELECT 1 FROM users WHERE user_id = $1 AND username = $3),
+                    EXISTS (SELECT 1 FROM user_information WHERE user_id = $1 AND username = $3),
                     EXISTS (SELECT 1 FROM messages WHERE message_id = 11 AND user_id = $1),
                     EXISTS (SELECT 1 FROM private_messages WHERE privatemessage_id = 21 AND user_id = $1 AND target_id = $2),
                     EXISTS (SELECT 1 FROM private_messages WHERE privatemessage_id = 22 AND user_id = $2 AND target_id = $1)",
         )
         .bind(user_id)
         .bind(other_user_id)
+        .bind(username)
         .fetch_one(&pool)
         .await?;
         assert_eq!(surviving_rows, (true, true, true, true, true));

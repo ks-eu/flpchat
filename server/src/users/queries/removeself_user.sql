@@ -7,9 +7,5 @@ WITH account AS (
     DELETE FROM users
     WHERE user_id = (SELECT user_id FROM account WHERE password_matches)
     RETURNING user_id
-), released_id AS (
-    INSERT INTO available_user_ids (user_id)
-    SELECT user_id FROM removed_user
-    RETURNING user_id
 )
-SELECT (SELECT password_matches FROM account), EXISTS (SELECT 1 FROM released_id)
+SELECT (SELECT password_matches FROM account), EXISTS (SELECT 1 FROM removed_user)
