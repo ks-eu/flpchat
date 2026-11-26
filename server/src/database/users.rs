@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use sqlx::PgPool;
 use tokio::sync::{mpsc, Semaphore};
-use argon2::{Argon2, PasswordVerifier, PasswordHash};
+use argon2::{Argon2, PasswordVerifier, PasswordHash, password_hash};
 use crate::users::registration::{RegRequest, RegResponse};
 use crate::users::remove::{RemoveSelfRequest, RemoveSelfResponse};
 
@@ -12,14 +12,28 @@ pub enum UserRequest {
     RemoveSelfRequest(RemoveSelfRequest),
 }
 
+enum VerifyResult {
+    Success(String),
+    WrongCredentials,
+    UsernameNotFound,
+}
+
+enum VerifyError {
+    SqlxError,
+    Argon2Error,
+    JoinError,
+    PermitError,
+}
+
 pub struct UserHandler {
     pool: PgPool,
     rx: mpsc::Receiver<UserRequest>,
+    permit: Arc<Semaphore>
 }
 
 impl UserHandler {
-    pub fn new(pool: PgPool, rx: mpsc::Receiver<UserRequest>) -> Self {
-        Self { pool, rx }
+    pub fn new(pool: PgPool, rx: mpsc::Receiver<UserRequest>, permit: Arc<Semaphore>) -> Self {
+        Self { pool, rx, permit }
     }
 
     pub async fn run(mut self) {
@@ -32,10 +46,28 @@ impl UserHandler {
                     let _ = request.try_send(response);
                 }
                 UserRequest::RemoveSelfRequest(request) => {
+                    let hashed = match self.verify_credentials(
+                        request.username(),
+                        request.password(),
+                    ).await {
+                        Ok(VerifyResult::Success(hashed)) => hashed,
+                        Ok(VerifyResult::WrongCredentials) => {
+                            let _ = request.try_send(RemoveSelfResponse::WrongCredentials);
+                            continue
+                        }
+                        Ok(VerifyResult::UsernameNotFound) => {
+                            let _ = request.try_send(RemoveSelfResponse::UserNotFound);
+                            continue
+                        }
+                        Err(_) => {
+                            let _ = request.try_send(RemoveSelfResponse::HandlerError);
+                            continue
+                        }
+                    };
                     let response = self
                         .removeself_user(
                             request.username(),
-                            request.hashed_password(),
+                            &hashed,
                         ).await;
                     let _ = request.try_send(response);
                 }
@@ -90,34 +122,49 @@ impl UserHandler {
         &self,
         username: &str,
         password: &str,
-        hash_permit: Arc<Semaphore>,
-        ret: bool
-    ) -> Result<Option<&str>, Box<dyn Error + Send + Sync>> {
+    ) -> Result<VerifyResult, VerifyError> {
         let hashed_password = match self.get_hashed_password(username).await {
             Ok(Some(hash)) => hash,
             Ok(None) => {
-                return Ok(None)
+                return Ok(VerifyResult::UsernameNotFound)
             }
             Err(_) => {
-                return Ok(None)
+                return Err(VerifyError::SqlxError)
             }
         };
 
-        let permit = hash_permit.acquire_owned().await?;
-        let hash = hashed_password.clone();
+        let permit = match self.permit.clone().acquire_owned().await {
+            Ok(permit) => permit,
+            Err(_) => {
+                return Err(VerifyError::PermitError)
+            }
+        };
+        let password = password.to_owned();
         let verify = tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            let parsed_hash = PasswordHash::new(&hash)?;
-            Ok(Argon2::default().verify_password(password.as_bytes(), &parsed_hash).is_ok())
-        }).await?;
-        
+            let parsed_hash = match PasswordHash::new(&hashed_password) {
+                Ok(parsed_hash) => parsed_hash,
+                Err(_) => {
+                    return Err(VerifyError::Argon2Error)
+                }
+            };
+            match Argon2::default().verify_password(password.as_bytes(), &parsed_hash) {
+                Ok(()) => {
+                    return Ok(VerifyResult::Success(hashed_password))
+                }
+                Err(password_hash::Error::PasswordInvalid) => {
+                    return Ok(VerifyResult::WrongCredentials)
+                }
+                Err(_) => {
+                    return Err(VerifyError::Argon2Error)
+                }
+            }
+        }).await;
+
         match verify {
-            Ok(true) => Ok(Some(&hashed_password)),
-            Ok(false) => Ok(None),
-            Err(err) => err,
+            Ok(result) => result,
+            Err(_) => Err(VerifyError::JoinError),
         }
-
-
     }
 
     async fn get_hashed_password(
@@ -132,7 +179,6 @@ impl UserHandler {
         .await?;
         Ok(hash)
     }
-
 }
 
 #[cfg(test)]

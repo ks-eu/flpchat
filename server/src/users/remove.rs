@@ -32,19 +32,19 @@ pub enum RemoveSelfResponse {
 
 pub struct RemoveSelfRequest {
     username: String,
-    hashed_password: String,
+    password: String,
     response_tx: oneshot::Sender<RemoveSelfResponse>,
 }
 
 impl RemoveSelfRequest {
     pub fn new(
         username: String,
-        hashed_password: String,
+        password: String,
         response_tx: oneshot::Sender<RemoveSelfResponse>,
     ) -> Self {
         Self {
             username,
-            hashed_password,
+            password,
             response_tx,
         }
     }
@@ -53,8 +53,8 @@ impl RemoveSelfRequest {
         &self.username
     }
 
-    pub fn hashed_password(&self) -> &str {
-        &self.hashed_password
+    pub fn password(&self) -> &str {
+        &self.password
     }
 
     pub fn try_send(
