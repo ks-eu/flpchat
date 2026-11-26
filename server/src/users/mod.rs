@@ -63,23 +63,20 @@ impl UserHandler {
         }
     }
 
-
-    async fn remove_user(&self, user_id: u16) -> RemoveResponse {
-        let removal = sqlx::query(include_str!("queries/remove_user.sql"))
-            .bind(i32::from(user_id))
-            .execute(&self.pool)
-            .await;
+    async fn removeself_user(&self, username: &str, hashed_password: &str) -> RemoveResponse {
+        let removal =
+            sqlx::query_as::<_, (Option<bool>, bool)>(include_str!("queries/removeself_user.sql"))
+                .bind(username)
+                .bind(hashed_password)
+                .fetch_one(&self.pool)
+                .await;
 
         match removal {
-            Ok(result) if result.rows_affected() == 1 => RemoveResponse::Success,
-            Ok(_) => RemoveResponse::UserNotFound,
-            Err(_) => RemoveResponse::HandlerError,
+            Ok((None, false)) => RemoveResponse::UserNotFound,
+            Ok((Some(false), false)) => RemoveResponse::WrongCredentials,
+            Ok((Some(true), true)) => RemoveResponse::Success,
+            _ => RemoveResponse::HandlerError,
         }
-    }
-
-    #[cfg(test)]
-    async fn removeself_user(&self, _username: &str, _hashed_password: &str) -> RemoveResponse {
-        todo!("implement credential-checked self-removal");
     }
 }
 
