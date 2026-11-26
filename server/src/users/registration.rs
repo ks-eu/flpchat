@@ -20,6 +20,7 @@ use flpc::unit::{
 use flpc::tokio::{CodecError, FlpcCodec};
 
 use crate::database::users::UserRequest;
+use crate::users::invalid_credential_lengths;
 
 type FlpcSink = SplitSink<Framed<TcpStream, FlpcCodec>, FlpcUnit>;
 
@@ -82,8 +83,9 @@ pub async fn handle_register(
         return
     }
 
-    if check_length(
-        &request,
+    if invalid_credential_lengths(
+        request.username(),
+        request.password(),
         max_len_username,
         max_len_password,
     ) {
@@ -132,21 +134,6 @@ fn check_token(
         false
     } else {
         true
-    }
-}
-
-fn check_length(
-    request: &Register,
-    max_len_username: usize,
-    max_len_password: usize,
-) -> bool {
-    if request.username().len() > max_len_username ||
-       request.username().len() == 0               ||
-       request.password().len() > max_len_password ||
-       request.password().len() == 0 {
-        true
-    } else {
-        false
     }
 }
 
@@ -199,10 +186,6 @@ async fn send_serverregister(
 #[cfg(test)]
 #[path = "../../tests/users/check_token.rs"]
 mod check_token_tests;
-
-#[cfg(test)]
-#[path = "../../tests/users/check_length.rs"]
-mod check_length_tests;
 
 #[cfg(test)]
 #[path = "../../tests/users/hash_password.rs"]

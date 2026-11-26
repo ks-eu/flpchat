@@ -15,6 +15,7 @@ use flpc::unit::{
 use flpc::tokio::{CodecError, FlpcCodec};
 
 use crate::database::users::UserRequest;
+use crate::users::invalid_credential_lengths;
 
 
 type FlpcSink = SplitSink<Framed<TcpStream, FlpcCodec>, FlpcUnit>;
@@ -69,7 +70,12 @@ pub async fn handle_removeself(
     max_len_username: usize,
     max_len_password: usize,
 ) {
-    let code = if check_length(&request, max_len_username, max_len_password) {
+    let code = if invalid_credential_lengths(
+        request.username(),
+        request.password(),
+        max_len_username,
+        max_len_password,
+    ) {
         2
     } else {
         match try_remove(request.username(), request.password(), user_tx).await {
@@ -80,17 +86,6 @@ pub async fn handle_removeself(
         }
     };
     let _ = send_serverremoveself(code, sink).await;
-}
-
-fn check_length(
-    request: &RemoveSelf,
-    max_len_username: usize,
-    max_len_password: usize,
-) -> bool {
-    request.username().is_empty()
-        || request.username().len() > max_len_username
-        || request.password().is_empty()
-        || request.password().len() > max_len_password
 }
 
 async fn try_remove(
@@ -157,34 +152,6 @@ mod tests {
             panic!("expected a removal request");
         };
         request
-    }
-
-    #[test]
-    fn check_length_enforces_credential_byte_boundaries() {
-        let cases = [
-            ("a", "b", 4, 6, false),
-            ("user", "secret", 4, 6, false),
-            ("users", "secret", 4, 6, true),
-            ("user", "secrets", 4, 6, true),
-            ("users", "secrets", 4, 6, true),
-            ("", "b", 4, 6, true),
-            ("a", "", 4, 6, true),
-            ("", "", 4, 6, true),
-            ("a", "b", 0, 6, true),
-            ("a", "b", 4, 0, true),
-            ("", "", 0, 0, true),
-            ("éé", "🔑é", 4, 6, false),
-            ("éé", "🔑é", 3, 6, true),
-            ("éé", "🔑é", 4, 5, true),
-        ];
-
-        for (username, password, username_limit, password_limit, rejects) in cases {
-            assert_eq!(
-                check_length(&request(username, password), username_limit, password_limit),
-                rejects,
-                "credentials {username:?}, {password:?} with limits {username_limit}, {password_limit}",
-            );
-        }
     }
 
     #[tokio::test]

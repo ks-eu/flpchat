@@ -1,37 +1,97 @@
-use super::{Register, check_length};
+use super::invalid_credential_lengths;
 
+// Alias: Accepts one byte each
+// Input: username "a", password "b", limits 4 and 6
+// Expected: false
 #[test]
-fn check_length_enforces_each_field_byte_limit() {
-    // (username, password, username limit, password limit, should_reject)
-    let cases = [
-        ("", "ok", 3, 5, true),
-        ("ab", "ok", 3, 5, false),
-        ("abc", "ok", 3, 5, false),
-        ("abcd", "ok", 3, 5, true),
-        ("ok", "", 3, 5, true),
-        ("ok", "1234", 3, 5, false),
-        ("ok", "12345", 3, 5, false),
-        ("ok", "123456", 3, 5, true),
-        ("abc", "12345", 3, 5, false),
-        ("abcd", "12345", 3, 5, true),
-        ("abc", "123456", 3, 5, true),
-        ("abcd", "123456", 3, 5, true),
-        ("", "ok", 0, 5, true),
-        ("a", "ok", 0, 5, true),
-        ("ok", "", 3, 0, true),
-        ("ok", "1", 3, 0, true),
-        ("éé", "ok", 4, 5, false),
-        ("éé", "ok", 3, 5, true),
-        ("ok", "éé", 2, 4, false),
-        ("ok", "éé", 2, 3, true),
-    ];
+fn length_min() {
+    assert!(!invalid_credential_lengths("a", "b", 4, 6));
+}
 
-    for (username, password, username_limit, password_limit, should_reject) in cases {
-        let request = Register::new("token".into(), username.into(), password.into());
-        assert_eq!(
-            check_length(&request, username_limit, password_limit),
-            should_reject,
-            "username {username:?} (limit {username_limit}), password {password:?} (limit {password_limit})",
-        );
-    }
+// Alias: Accepts exact ASCII limits
+// Input: username "user", password "secret", limits 4 and 6
+// Expected: false
+#[test]
+fn length_exact() {
+    assert!(!invalid_credential_lengths("user", "secret", 4, 6));
+}
+
+// Alias: Rejects empty username
+// Input: username "", password "secret", limits 4 and 6
+// Expected: true
+#[test]
+fn length_empty_user() {
+    assert!(invalid_credential_lengths("", "secret", 4, 6));
+}
+
+// Alias: Rejects empty password
+// Input: username "user", password "", limits 4 and 6
+// Expected: true
+#[test]
+fn length_empty_password() {
+    assert!(invalid_credential_lengths("user", "", 4, 6));
+}
+
+// Alias: Rejects two empty fields
+// Input: username "", password "", limits 4 and 6
+// Expected: true
+#[test]
+fn length_both_empty() {
+    assert!(invalid_credential_lengths("", "", 4, 6));
+}
+
+// Alias: Rejects username one byte over
+// Input: username "users", password "secret", limits 4 and 6
+// Expected: true
+#[test]
+fn length_long_user() {
+    assert!(invalid_credential_lengths("users", "secret", 4, 6));
+}
+
+// Alias: Rejects password one byte over
+// Input: username "user", password "secrets", limits 4 and 6
+// Expected: true
+#[test]
+fn length_long_password() {
+    assert!(invalid_credential_lengths("user", "secrets", 4, 6));
+}
+
+// Alias: Rejects a zero username limit
+// Input: username "a", password "b", limits 0 and 6
+// Expected: true
+#[test]
+fn length_zero_user() {
+    assert!(invalid_credential_lengths("a", "b", 0, 6));
+}
+
+// Alias: Rejects a zero password limit
+// Input: username "a", password "b", limits 4 and 0
+// Expected: true
+#[test]
+fn length_zero_password() {
+    assert!(invalid_credential_lengths("a", "b", 4, 0));
+}
+
+// Alias: Accepts exact UTF-8 byte limits
+// Input: username "éé", password "🔑é", limits 4 and 6
+// Expected: false
+#[test]
+fn length_multi_exact() {
+    assert!(!invalid_credential_lengths("éé", "🔑é", 4, 6));
+}
+
+// Alias: Counts username bytes
+// Input: username "éé", password "🔑é", limits 3 and 6
+// Expected: true
+#[test]
+fn length_multi_user() {
+    assert!(invalid_credential_lengths("éé", "🔑é", 3, 6));
+}
+
+// Alias: Counts password bytes
+// Input: username "éé", password "🔑é", limits 4 and 5
+// Expected: true
+#[test]
+fn length_multi_password() {
+    assert!(invalid_credential_lengths("éé", "🔑é", 4, 5));
 }
