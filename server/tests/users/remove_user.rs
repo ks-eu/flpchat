@@ -1,12 +1,13 @@
+use tokio::sync::mpsc;
+
 use crate::database::serial_tests::postgres_test;
 
 use super::transaction_pool::{delete_completed, track_completed_deletes, transaction_pool};
 use super::{PgPool, RegResponse, RemoveResponse, UserHandler};
 
 async fn register_user(pool: &PgPool, username: &str) -> u16 {
-    let RegResponse::Success(user_id) =
-        UserHandler::insert_user(pool, username, "fixture-hash").await
-    else {
+    let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
+    let RegResponse::Success(user_id) = handler.insert_user(username, "fixture-hash").await else {
         panic!("failed to register fixture user {username}");
     };
     user_id

@@ -1,3 +1,5 @@
+use tokio::sync::mpsc;
+
 use crate::database::serial_tests::postgres_test;
 
 use super::transaction_pool::{delete_completed, track_completed_deletes, transaction_pool};
@@ -6,10 +8,11 @@ use super::{PgPool, RegResponse, UserHandler};
 postgres_test! {
     async fn insert_user_success_rolls_back(pool: PgPool) -> sqlx::Result<()> {
         let tx_pool = transaction_pool(&pool).await?;
+        let handler = UserHandler::new(tx_pool.clone(), mpsc::channel(1).1);
         let username = "insert_user_test";
         let password_hash = "fixture-hash";
         let RegResponse::Success(user_id) =
-            UserHandler::insert_user(&tx_pool, username, password_hash).await
+            handler.insert_user(username, password_hash).await
         else {
             panic!("expected insert_user to return Success");
         };
@@ -59,12 +62,13 @@ postgres_test! {
 postgres_test! {
     async fn insert_user_claims_lowest_available_id(pool: PgPool) -> sqlx::Result<()> {
         let tx_pool = transaction_pool(&pool).await?;
+        let handler = UserHandler::new(tx_pool.clone(), mpsc::channel(1).1);
         sqlx::query("DELETE FROM available_user_ids WHERE user_id NOT IN (7, 42, 101)")
             .execute(&tx_pool)
             .await?;
 
         assert!(matches!(
-            UserHandler::insert_user(&tx_pool, "lowest_id", "fixture-hash").await,
+            handler.insert_user("lowest_id", "fixture-hash").await,
             RegResponse::Success(7)
         ));
 
@@ -82,16 +86,17 @@ postgres_test! {
 postgres_test! {
     async fn insert_user_claims_last_usable_id(pool: PgPool) -> sqlx::Result<()> {
         let tx_pool = transaction_pool(&pool).await?;
+        let handler = UserHandler::new(tx_pool.clone(), mpsc::channel(1).1);
         sqlx::query("DELETE FROM available_user_ids WHERE user_id <> 65535")
             .execute(&tx_pool)
             .await?;
 
         assert!(matches!(
-            UserHandler::insert_user(&tx_pool, "last_id", "fixture-hash").await,
+            handler.insert_user("last_id", "fixture-hash").await,
             RegResponse::Success(65535)
         ));
         assert!(matches!(
-            UserHandler::insert_user(&tx_pool, "next_user", "fixture-hash").await,
+            handler.insert_user("next_user", "fixture-hash").await,
             RegResponse::NotEnoughSpace
         ));
 
@@ -103,12 +108,13 @@ postgres_test! {
 postgres_test! {
     async fn insert_user_creates_no_rows_when_id_pool_is_empty(pool: PgPool) -> sqlx::Result<()> {
         let tx_pool = transaction_pool(&pool).await?;
+        let handler = UserHandler::new(tx_pool.clone(), mpsc::channel(1).1);
         sqlx::query("DELETE FROM available_user_ids")
             .execute(&tx_pool)
             .await?;
 
         assert!(matches!(
-            UserHandler::insert_user(&tx_pool, "no_id", "fixture-hash").await,
+            handler.insert_user("no_id", "fixture-hash").await,
             RegResponse::NotEnoughSpace
         ));
 
@@ -127,13 +133,14 @@ postgres_test! {
 postgres_test! {
     async fn insert_user_preserves_existing_account_and_available_id(pool: PgPool) -> sqlx::Result<()> {
         let tx_pool = transaction_pool(&pool).await?;
+        let handler = UserHandler::new(tx_pool.clone(), mpsc::channel(1).1);
         sqlx::query("DELETE FROM available_user_ids WHERE user_id > 2")
             .execute(&tx_pool)
             .await?;
 
         let username = "duplicate_user";
         assert!(matches!(
-            UserHandler::insert_user(&tx_pool, username, "original-hash").await,
+            handler.insert_user(username, "original-hash").await,
             RegResponse::Success(1)
         ));
 
@@ -149,7 +156,7 @@ postgres_test! {
         .await?;
 
         assert!(matches!(
-            UserHandler::insert_user(&tx_pool, username, "different-hash").await,
+            handler.insert_user(username, "different-hash").await,
             RegResponse::UsernameExists
         ));
 
@@ -189,13 +196,14 @@ postgres_test! {
 postgres_test! {
     async fn insert_user_reports_duplicate_before_exhausted_pool(pool: PgPool) -> sqlx::Result<()> {
         let tx_pool = transaction_pool(&pool).await?;
+        let handler = UserHandler::new(tx_pool.clone(), mpsc::channel(1).1);
         sqlx::query("DELETE FROM available_user_ids WHERE user_id <> 1")
             .execute(&tx_pool)
             .await?;
 
         let username = "duplicate_when_exhausted";
         assert!(matches!(
-            UserHandler::insert_user(&tx_pool, username, "original-hash").await,
+            handler.insert_user(username, "original-hash").await,
             RegResponse::Success(1)
         ));
         let available_count = sqlx::query_scalar::<_, i64>("SELECT count(*) FROM available_user_ids")
@@ -204,7 +212,7 @@ postgres_test! {
         assert_eq!(available_count, 0);
 
         assert!(matches!(
-            UserHandler::insert_user(&tx_pool, username, "different-hash").await,
+            handler.insert_user(username, "different-hash").await,
             RegResponse::UsernameExists
         ));
 
@@ -216,6 +224,7 @@ postgres_test! {
 postgres_test! {
     async fn insert_user_restores_claimed_id_if_profile_insert_fails(pool: PgPool) -> sqlx::Result<()> {
         let tx_pool = transaction_pool(&pool).await?;
+        let handler = UserHandler::new(tx_pool.clone(), mpsc::channel(1).1);
         sqlx::query("DELETE FROM available_user_ids WHERE user_id <> 7")
             .execute(&tx_pool)
             .await?;
@@ -232,7 +241,7 @@ postgres_test! {
             .execute(&tx_pool)
             .await?;
         let response =
-            UserHandler::insert_user(&tx_pool, "rejected_profile", "fixture-hash").await;
+            handler.insert_user("rejected_profile", "fixture-hash").await;
         sqlx::query("ROLLBACK TO SAVEPOINT insertion_attempt")
             .execute(&tx_pool)
             .await?;
