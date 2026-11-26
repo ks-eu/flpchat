@@ -1,10 +1,30 @@
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
+
+use argon2::{Argon2, PasswordHasher};
+use flpc::{
+    tokio::FlpcCodec,
+    unit::{FlpcUnit, Register, RemoveSelf, ServerUnit},
+};
+use futures_util::StreamExt;
 use sqlx::{
     Acquire, Arguments, PgPool, Postgres, Transaction, postgres::PgArguments, types::JsonValue,
 };
+use tokio::{
+    net::{TcpListener, TcpStream},
+    sync::{Semaphore, mpsc},
+    time::timeout,
+};
+use tokio_util::codec::Framed;
 
+use super::{RegResponse, UserHandler, VerifyResult};
 use crate::database::serial_tests::postgres_test;
+use crate::users::{registration::handle_register, remove::handle_removeself};
 
 const SAMPLE_COUNT: usize = 20;
+const TIMING_PASSWORD: &str = "timing-password";
 const EXPLAIN_INSERT: &str = concat!(
     "EXPLAIN (ANALYZE, TIMING OFF, FORMAT JSON) ",
     include_str!("../../src/database/queries/insert_user.sql"),
@@ -58,6 +78,11 @@ async fn measure_query(
         sample.rollback().await?;
     }
 
+    report_samples(name, &mut samples);
+    Ok(())
+}
+
+fn report_samples(name: &str, samples: &mut [f64]) {
     samples.sort_unstable_by(f64::total_cmp);
     let middle = samples.len() / 2;
     let median = (samples[middle - 1] + samples[middle]) / 2.0;
@@ -68,7 +93,117 @@ async fn measure_query(
         median,
         samples[samples.len() - 1]
     );
-    Ok(())
+}
+
+async fn loopback() -> (Framed<TcpStream, FlpcCodec>, Framed<TcpStream, FlpcCodec>) {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let peer = TcpStream::connect(listener.local_addr().unwrap()).await.unwrap();
+    let (server, _) = listener.accept().await.unwrap();
+    (Framed::new(server, FlpcCodec), Framed::new(peer, FlpcCodec))
+}
+
+async fn read_response(peer: &mut Framed<TcpStream, FlpcCodec>) -> FlpcUnit {
+    timeout(Duration::from_secs(5), peer.next())
+        .await
+        .expect("handler response should arrive promptly")
+        .expect("handler should send a response")
+        .expect("peer should decode the response")
+}
+
+postgres_test! {
+    async fn verify_credentials_execution_time(pool: PgPool) -> sqlx::Result<()> {
+        let worker = UserHandler::new(pool, mpsc::channel(1).1, Arc::new(Semaphore::new(1)));
+        let username = "timing_verify";
+        let hash = Argon2::default().hash_password(TIMING_PASSWORD.as_bytes()).unwrap().to_string();
+        assert!(matches!(worker.insert_user(username, &hash).await, RegResponse::Success(_)));
+
+        let mut samples = Vec::with_capacity(SAMPLE_COUNT);
+        for run in 0..=SAMPLE_COUNT {
+            let start = Instant::now();
+            let result = worker.verify_credentials(username, TIMING_PASSWORD).await;
+            let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+            assert!(matches!(result, Ok(VerifyResult::Success(verified)) if verified == hash));
+            if run != 0 {
+                samples.push(elapsed_ms);
+            }
+        }
+        report_samples("verify_credentials", &mut samples);
+        Ok(())
+    }
+}
+
+postgres_test! {
+    async fn handle_register_execution_time(pool: PgPool) -> sqlx::Result<()> {
+        let (user_tx, user_rx) = mpsc::channel(1);
+        let permit = Arc::new(Semaphore::new(1));
+        let worker = tokio::spawn(UserHandler::new(pool, user_rx, Arc::clone(&permit)).run());
+
+        let mut samples = Vec::with_capacity(SAMPLE_COUNT);
+        for run in 0..=SAMPLE_COUNT {
+            let (server, mut peer) = loopback().await;
+            let (sink, _) = server.split();
+            let request = Register::new(
+                "token".into(),
+                format!("timing_register_{run}"),
+                TIMING_PASSWORD.into(),
+            );
+            let start = Instant::now();
+            handle_register(request, user_tx.clone(), Arc::clone(&permit), sink, "token", 32, 64)
+                .await;
+            let response = read_response(&mut peer).await;
+            let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+            assert!(
+                matches!(response, FlpcUnit::Server(ServerUnit::ServerRegister(reply)) if *reply.outcome() == 0),
+                "registration sample should succeed",
+            );
+            if run != 0 {
+                samples.push(elapsed_ms);
+            }
+        }
+
+        drop(user_tx);
+        worker.await.expect("user worker should exit");
+        report_samples("handle_register", &mut samples);
+        Ok(())
+    }
+}
+
+postgres_test! {
+    async fn handle_removeself_execution_time(pool: PgPool) -> sqlx::Result<()> {
+        let (user_tx, user_rx) = mpsc::channel(1);
+        let worker = UserHandler::new(pool, user_rx, Arc::new(Semaphore::new(1)));
+        let hash = Argon2::default().hash_password(TIMING_PASSWORD.as_bytes()).unwrap().to_string();
+        let usernames: Vec<_> = (0..=SAMPLE_COUNT)
+            .map(|run| format!("timing_removeself_{run}"))
+            .collect();
+        for username in &usernames {
+            assert!(matches!(worker.insert_user(username, &hash).await, RegResponse::Success(_)));
+        }
+        let worker = tokio::spawn(worker.run());
+
+        let mut samples = Vec::with_capacity(SAMPLE_COUNT);
+        for (run, username) in usernames.into_iter().enumerate() {
+            let (server, mut peer) = loopback().await;
+            let (sink, _) = server.split();
+            let request = RemoveSelf::new(username, TIMING_PASSWORD.into());
+            let start = Instant::now();
+            handle_removeself(request, user_tx.clone(), sink, 32, 64).await;
+            let response = read_response(&mut peer).await;
+            let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+            assert!(
+                matches!(response, FlpcUnit::Server(ServerUnit::ServerRemoveSelf(reply)) if *reply.result() == 0),
+                "removal sample should succeed",
+            );
+            if run != 0 {
+                samples.push(elapsed_ms);
+            }
+        }
+
+        drop(user_tx);
+        worker.await.expect("user worker should exit");
+        report_samples("handle_removeself", &mut samples);
+        Ok(())
+    }
 }
 
 postgres_test! {
