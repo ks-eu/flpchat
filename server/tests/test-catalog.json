@@ -23,6 +23,10 @@
     "insert-user": {
       "title": "UserHandler::insert_user",
       "inputs": "&self, username: &str, hashed_password: &str"
+    },
+    "removeself-user": {
+      "title": "UserHandler::removeself_user",
+      "inputs": "&self, username: &str, hashed_password: &str"
     }
   },
   "cases": {
@@ -313,6 +317,86 @@
       "alias": "Rolls back when profile insertion fails",
       "input": "IDs=[7], constraint rejects profile username \"blocked\", insert_user(\"blocked\", \"fixture-hash\")",
       "expected": "HandlerError. Neither row survives and ID 7 remains available."
+    },
+    "database::users::removeself_user_tests::remove_match": {
+      "id": "remove-match",
+      "component": "removeself-user",
+      "suite": "regular",
+      "alias": "Deletes the account without recycling its ID",
+      "input": "R without messages, removeself_user(\"target\", \"target-hash\")",
+      "expected": "Success(7). Account and profile 7 are gone. Peers survive and IDs=[10]."
+    },
+    "database::users::removeself_user_tests::remove_wrong": {
+      "id": "remove-wrong",
+      "component": "removeself-user",
+      "suite": "regular",
+      "alias": "Preserves rows for a different account's hash",
+      "input": "R with all messages, removeself_user(\"target\", \"peer-a-hash\")",
+      "expected": "WrongCredentials. Accounts, profiles, all messages and IDs are unchanged."
+    },
+    "database::users::removeself_user_tests::remove_missing": {
+      "id": "remove-missing",
+      "component": "removeself-user",
+      "suite": "regular",
+      "alias": "Reports unknown username",
+      "input": "R without messages, removeself_user(\"missing\", \"target-hash\")",
+      "expected": "UserNotFound and no writes."
+    },
+    "database::users::removeself_user_tests::remove_twice": {
+      "id": "remove-twice",
+      "component": "removeself-user",
+      "suite": "regular",
+      "alias": "Reports an already removed username",
+      "input": "Remove (\"target\", \"target-hash\") successfully from R, then call again with the same values.",
+      "expected": "Second call returns UserNotFound. Peers and IDs=[10] remain unchanged."
+    },
+    "database::users::removeself_user_tests::remove_recreated": {
+      "id": "remove-recreated",
+      "component": "removeself-user",
+      "suite": "regular",
+      "alias": "Uses the recreated account's current hash and ID",
+      "input": "Remove target 7 from R; recreate account(10, \"target\", \"replacement-hash\"); call with \"target-hash\", then \"replacement-hash\".",
+      "expected": "First call returns WrongCredentials and leaves account 10 intact. Second returns Success(10) and deletes account 10. Neither ID is recycled."
+    },
+    "database::users::removeself_user_tests::remove_max_id": {
+      "id": "remove-max-id",
+      "component": "removeself-user",
+      "suite": "regular",
+      "alias": "Returns the maximum user ID",
+      "input": "account(65535, \"last-user\", \"last-hash\"), removeself_user(\"last-user\", \"last-hash\")",
+      "expected": "Success(65535) and account 65535 is gone."
+    },
+    "database::users::removeself_user_tests::remove_public_cascade": {
+      "id": "remove-public-cascade",
+      "component": "removeself-user",
+      "suite": "regular",
+      "alias": "Deletes the target's public messages",
+      "input": "R plus public messages 11 and 12, remove (\"target\", \"target-hash\").",
+      "expected": "Success(7); profile 7 and message 11 are gone. Message 12 survives."
+    },
+    "database::users::removeself_user_tests::remove_private_sender": {
+      "id": "remove-private-sender",
+      "component": "removeself-user",
+      "suite": "regular",
+      "alias": "Cascades through the sender ID",
+      "input": "R plus private messages 21 (7 to 8) and 23 (8 to 9), remove (\"target\", \"target-hash\").",
+      "expected": "Success(7); private message 21 is gone. Message 23 survives."
+    },
+    "database::users::removeself_user_tests::remove_private_recipient": {
+      "id": "remove-private-recipient",
+      "component": "removeself-user",
+      "suite": "regular",
+      "alias": "Cascades through the recipient ID",
+      "input": "R plus private messages 22 (8 to 7) and 23 (8 to 9), remove (\"target\", \"target-hash\").",
+      "expected": "Success(7); private message 22 is gone. Message 23 survives."
+    },
+    "database::users::removeself_user_tests::remove_db_error": {
+      "id": "remove-db-error",
+      "component": "removeself-user",
+      "suite": "regular",
+      "alias": "Preserves dependents when deletion is blocked",
+      "input": "R plus all messages; a non-cascading foreign key references account 7; remove (\"target\", \"target-hash\").",
+      "expected": "HandlerError. All accounts, profiles, messages, and IDs survive."
     }
   }
 }
