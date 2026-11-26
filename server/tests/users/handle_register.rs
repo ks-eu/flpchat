@@ -62,12 +62,13 @@ async fn registration_outcome(
     .expect("registration exchange should complete")
 }
 
-async fn receive_registration(user_rx: &mut mpsc::Receiver<UserRequest>) -> RegRequest {
-    let UserRequest::RegRequest(request) = user_rx
-        .recv()
-        .await
-        .expect("worker should receive a registration request");
-    request
+async fn receive_registration(user_rx: &mut mpsc::Receiver<UserRequest>) -> Option<RegRequest> {
+    while let Some(request) = user_rx.recv().await {
+        if let UserRequest::RegRequest(request) = request {
+            return Some(request);
+        }
+    }
+    None
 }
 
 fn assert_credentials(request: &RegRequest, username: &str, password: &str) {
@@ -93,7 +94,9 @@ async fn handle_register_encodes_worker_outcomes() {
         let (username, password) = ("Zoë", "pāss");
         let request = Register::new(SERVER_TOKEN.into(), username.into(), password.into());
         let code = registration_outcome(request, user_tx, Arc::new(Semaphore::new(1)), async {
-            let request = receive_registration(&mut user_rx).await;
+            let request = receive_registration(&mut user_rx)
+                .await
+                .expect("worker should receive a registration request");
             if expected_code == 0 {
                 assert_credentials(&request, username, password);
             }
@@ -171,7 +174,11 @@ async fn handle_register_reports_worker_disconnects() {
 
     let (user_tx, mut user_rx) = mpsc::channel(1);
     let code = registration_outcome(request, user_tx, permit, async {
-        drop(receive_registration(&mut user_rx).await);
+        drop(
+            receive_registration(&mut user_rx)
+                .await
+                .expect("worker should receive a registration request"),
+        );
     })
     .await;
     assert_eq!(code, 5, "worker reply sender dropped");
@@ -190,7 +197,7 @@ async fn handle_register_rejects_empty_credentials() {
         let mut reached_worker = false;
         let request = Register::new(SERVER_TOKEN.into(), username.into(), password.into());
         let code = registration_outcome(request, user_tx, Arc::new(Semaphore::new(1)), async {
-            if let Some(UserRequest::RegRequest(request)) = user_rx.recv().await {
+            if let Some(request) = receive_registration(&mut user_rx).await {
                 reached_worker = true;
                 assert!(request.try_send(RegResponse::Success(1)).is_ok());
             }

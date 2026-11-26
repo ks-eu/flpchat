@@ -8,6 +8,15 @@ use tokio::time::timeout;
 
 use super::{RegRequest, RegResponse, UserRequest, try_insert};
 
+fn try_receive_registration(user_rx: &mut mpsc::Receiver<UserRequest>) -> RegRequest {
+    loop {
+        let request = user_rx.try_recv().expect("registration request");
+        if let UserRequest::RegRequest(request) = request {
+            return request;
+        }
+    }
+}
+
 #[tokio::test]
 async fn try_insert_delivers_request_and_returns_success_id() {
     let cases = [
@@ -21,7 +30,7 @@ async fn try_insert_delivers_request_and_returns_success_id() {
         let mut caller = pin!(try_insert(username, hashed_password, user_tx));
 
         assert!(poll!(caller.as_mut()).is_pending());
-        let UserRequest::RegRequest(request) = user_rx.try_recv().expect("registration request");
+        let request = try_receive_registration(&mut user_rx);
         assert_eq!(request.username(), username);
         assert_eq!(request.hashed_password(), hashed_password);
         assert!(request.try_send(RegResponse::Success(expected_id)).is_ok());
@@ -46,7 +55,7 @@ async fn try_insert_returns_the_workers_unsuccessful_reply() {
         let mut caller = pin!(try_insert("alice", "password-hash", user_tx));
 
         assert!(poll!(caller.as_mut()).is_pending());
-        let UserRequest::RegRequest(request) = user_rx.try_recv().expect("registration request");
+        let request = try_receive_registration(&mut user_rx);
         let expected = discriminant(&reply);
         assert!(request.try_send(reply).is_ok());
 
@@ -84,11 +93,11 @@ async fn try_insert_waits_for_room_in_the_request_queue() {
     let mut caller = pin!(try_insert("alice", "password-hash", user_tx));
 
     assert!(poll!(caller.as_mut()).is_pending());
-    let UserRequest::RegRequest(queued) = user_rx.try_recv().expect("queued request");
+    let queued = try_receive_registration(&mut user_rx);
     assert_eq!(queued.username(), "queued-user");
 
     assert!(poll!(caller.as_mut()).is_pending());
-    let UserRequest::RegRequest(request) = user_rx.try_recv().expect("registration request");
+    let request = try_receive_registration(&mut user_rx);
     assert_eq!(request.username(), "alice");
     assert_eq!(request.hashed_password(), "password-hash");
     assert!(request.try_send(RegResponse::Success(7)).is_ok());
@@ -120,7 +129,7 @@ async fn try_insert_returns_handler_error_when_worker_drops_reply_sender() {
     let mut caller = pin!(try_insert("alice", "password-hash", user_tx));
 
     assert!(poll!(caller.as_mut()).is_pending());
-    let UserRequest::RegRequest(request) = user_rx.try_recv().expect("registration request");
+    let request = try_receive_registration(&mut user_rx);
     drop(request);
 
     let response = timeout(Duration::from_secs(5), caller)
@@ -135,8 +144,7 @@ async fn try_insert_cancellation_returns_the_undelivered_worker_reply() {
     let request = {
         let mut caller = pin!(try_insert("alice", "password-hash", user_tx));
         assert!(poll!(caller.as_mut()).is_pending());
-        let UserRequest::RegRequest(request) = user_rx.try_recv().expect("registration request");
-        request
+        try_receive_registration(&mut user_rx)
     };
 
     let reply = request.try_send(RegResponse::Success(42));
