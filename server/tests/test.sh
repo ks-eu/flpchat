@@ -12,11 +12,64 @@ fail() {
     exit 1
 }
 
-case "$#:${1-}" in
-    0:) test_args=(--include-ignored --skip database::users::query_performance_tests::) ;;
-    1:--performance) test_args=(--ignored --nocapture database::users::query_performance_tests::) ;;
-    *) fail "Usage: $0 [--performance]" ;;
-esac
+suite=regular
+if [[ ${1-} == --performance ]]; then
+    suite=performance
+    shift
+fi
+
+filter=
+exact=false
+if (($#)); then
+    [[ $1 == -- ]] || fail "Usage: $0 [--performance] [-- [--exact] FILTER [--exact]]"
+    shift
+    if [[ ${1-} == --exact ]]; then
+        exact=true
+        shift
+    fi
+    if [[ $exact == false && $# == 2 && $2 == --exact ]]; then
+        exact=true
+        filter=$1
+    else
+        (($# == 1)) || fail "Usage: $0 [--performance] [-- [--exact] FILTER [--exact]]"
+        filter=$1
+    fi
+    [[ -n $filter ]] || fail "Test filter must not be empty."
+fi
+
+performance_namespace=database::users::query_performance_tests::
+if [[ -z $filter ]]; then
+    if [[ $suite == performance ]]; then
+        test_args=(--ignored --nocapture "$performance_namespace" --test-threads=1)
+    else
+        test_args=(--include-ignored --skip "$performance_namespace")
+    fi
+else
+    discovered=$(cargo test --locked -p server -- --list)
+    selected_tests=()
+    while IFS= read -r line; do
+        [[ $line == *": test" || $line == *": benchmark" ]] || continue
+        name=${line%: *}
+        if [[ $suite == performance ]]; then
+            [[ $name == "$performance_namespace"* ]] || continue
+        else
+            [[ $name == "$performance_namespace"* ]] && continue
+        fi
+        if [[ $exact == true ]]; then
+            [[ $name == "$filter" ]] || continue
+        else
+            [[ $name == *"$filter"* ]] || continue
+        fi
+        selected_tests+=("$name")
+    done <<< "$discovered"
+
+    ((${#selected_tests[@]})) || fail "No $suite tests matched filter '$filter'."
+    if [[ $suite == performance ]]; then
+        test_args=(--ignored --nocapture --test-threads=1 --exact "${selected_tests[@]}")
+    else
+        test_args=(--include-ignored --exact "${selected_tests[@]}")
+    fi
+fi
 
 port_listeners() {
     ss -H -ltnp "sport = :$port"
