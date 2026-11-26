@@ -12,7 +12,6 @@ GROUPS = (
     "Credential verification",
     "Self-removal",
     "User worker",
-    "Account deletion",
     "Other",
 )
 TEST_LINE = re.compile(r"^test ([\w:]+) \.\.\.\s*(.*)$")
@@ -44,8 +43,6 @@ def feature(path):
         return "Self-removal"
     if name.startswith(("handle_removeself", "removeself_user")):
         return "Self-removal"
-    if name.startswith("remove_user"):
-        return "Account deletion"
     if "users::registration::" in path or name.startswith(("handle_register", "insert_user")):
         return "Registration"
     return "Other"
