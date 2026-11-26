@@ -21,9 +21,6 @@ use flpc::tokio::{CodecError, FlpcCodec};
 
 use crate::database::users::UserRequest;
 
-use super::check_length;
-
-
 type FlpcSink = SplitSink<Framed<TcpStream, FlpcCodec>, FlpcUnit>;
 
 pub enum RegResponse {
@@ -135,6 +132,21 @@ fn check_token(
         false
     } else {
         true
+    }
+}
+
+fn check_length(
+    request: &Register,
+    max_len_username: usize,
+    max_len_password: usize,
+) -> bool {
+    if request.username().len() > max_len_username ||
+       request.username().len() == 0               ||
+       request.password().len() > max_len_password ||
+       request.password().len() == 0 {
+        true
+    } else {
+        false
     }
 }
 
