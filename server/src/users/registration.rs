@@ -1,7 +1,5 @@
-use std::error::Error;
 use std::sync::Arc;
 
-use argon2::{Argon2, PasswordHasher};
 use tokio::sync::{
     oneshot,
     mpsc,
@@ -20,6 +18,8 @@ use flpc::unit::{
 use flpc::tokio::{CodecError, FlpcCodec};
 
 use crate::database::users::UserRequest;
+
+use super::hash_password;
 
 
 type FlpcSink = SplitSink<Framed<TcpStream, FlpcCodec>, FlpcUnit>;
@@ -151,23 +151,6 @@ fn check_length (
     }
 }
 
-/// Hashes the request's password while holding a semaphore permit.
-async fn hash_password(
-    request: &Register,
-    hash_permit: Arc<Semaphore>,
-) -> Result<String, Box<dyn Error + Send + Sync>> {
-    let permit = hash_permit.acquire_owned().await?;
-    let password = request.password().clone();
-    let hash = tokio::task::spawn_blocking(move || {
-        // Keep the permit until hashing ends even if the caller is canceled.
-        let _permit = permit;
-        Argon2::default().hash_password(password.as_bytes())
-    })
-    .await??;
-
-    Ok(hash.to_string())
-}
-
 /// Sends an insert request and returns a handler error if either channel
 /// closes early.
 async fn try_insert(
@@ -204,10 +187,6 @@ mod check_token_tests;
 #[cfg(test)]
 #[path = "../../tests/users/check_length.rs"]
 mod check_length_tests;
-
-#[cfg(test)]
-#[path = "../../tests/users/hash_password.rs"]
-mod hash_password_tests;
 
 #[cfg(test)]
 #[path = "../../tests/users/try_insert.rs"]
