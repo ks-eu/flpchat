@@ -76,6 +76,11 @@ impl UserHandler {
             Err(_) => RemoveResponse::HandlerError,
         }
     }
+
+    #[cfg(test)]
+    async fn removeself_user(&self, _username: &str, _hashed_password: &str) -> RemoveResponse {
+        todo!("implement credential-checked self-removal");
+    }
 }
 
 #[cfg(test)]
@@ -87,8 +92,8 @@ mod tests;
 mod transaction_pool;
 
 #[cfg(test)]
-#[path = "../../tests/users/remove_user.rs"]
-mod remove_user_tests;
+#[path = "../../tests/users/removeself_user.rs"]
+mod removeself_user_tests;
 
 #[cfg(test)]
 #[path = "../../tests/users/user_handler.rs"]

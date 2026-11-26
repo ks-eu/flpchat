@@ -5,21 +5,26 @@ use crate::database::serial_tests::postgres_test;
 use super::transaction_pool::{delete_completed, track_completed_deletes, transaction_pool};
 use super::{PgPool, RegResponse, RemoveResponse, UserHandler};
 
-async fn register_user(handler: &UserHandler, username: &str) -> u16 {
-    let RegResponse::Success(user_id) = handler.insert_user(username, "fixture-hash").await else {
+const FIXTURE_HASH: &str = "fixture-hash";
+
+async fn register_user(handler: &UserHandler, username: &str, hashed_password: &str) -> u16 {
+    let RegResponse::Success(user_id) = handler.insert_user(username, hashed_password).await else {
         panic!("failed to register fixture user {username}");
     };
     user_id
 }
 
 postgres_test! {
-    async fn remove_user_deletes_account_and_profile_and_releases_id(pool: PgPool) -> sqlx::Result<()> {
+    async fn removeself_user_deletes_account_and_profile_and_releases_id(
+        pool: PgPool,
+    ) -> sqlx::Result<()> {
         let pool = transaction_pool(&pool).await?;
         let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
-        let user_id = register_user(&handler, "remove_user_test").await;
+        let username = "remove_user_test";
+        let user_id = register_user(&handler, username, FIXTURE_HASH).await;
 
         assert!(matches!(
-            handler.remove_user(user_id).await,
+            handler.removeself_user(username, FIXTURE_HASH).await,
             RemoveResponse::Success
         ));
 
@@ -39,12 +44,13 @@ postgres_test! {
 }
 
 postgres_test! {
-    async fn remove_user_cascades_only_to_their_messages(pool: PgPool) -> sqlx::Result<()> {
+    async fn removeself_user_cascades_only_to_their_messages(pool: PgPool) -> sqlx::Result<()> {
         let pool = transaction_pool(&pool).await?;
         let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
-        let removed_id = register_user(&handler, "removed_user").await;
-        let sender_id = register_user(&handler, "remaining_sender").await;
-        let recipient_id = register_user(&handler, "remaining_recipient").await;
+        let username = "removed_user";
+        let removed_id = register_user(&handler, username, FIXTURE_HASH).await;
+        let sender_id = register_user(&handler, "remaining_sender", FIXTURE_HASH).await;
+        let recipient_id = register_user(&handler, "remaining_recipient", FIXTURE_HASH).await;
 
         sqlx::query(
             "INSERT INTO messages (message_id, user_id, message)
@@ -67,7 +73,7 @@ postgres_test! {
         .await?;
 
         assert!(matches!(
-            handler.remove_user(removed_id).await,
+            handler.removeself_user(username, FIXTURE_HASH).await,
             RemoveResponse::Success
         ));
 
@@ -118,15 +124,16 @@ postgres_test! {
     async fn insert_user_reuses_the_lowest_released_id(pool: PgPool) -> sqlx::Result<()> {
         let pool = transaction_pool(&pool).await?;
         let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
-        let released_id = register_user(&handler, "original_user").await;
+        let username = "original_user";
+        let released_id = register_user(&handler, username, FIXTURE_HASH).await;
         assert_eq!(released_id, 1);
         assert!(matches!(
-            handler.remove_user(released_id).await,
+            handler.removeself_user(username, FIXTURE_HASH).await,
             RemoveResponse::Success
         ));
 
         let new_username = "replacement_user";
-        let new_id = register_user(&handler, new_username).await;
+        let new_id = register_user(&handler, new_username, FIXTURE_HASH).await;
         assert_eq!(new_id, released_id);
 
         let account_and_profile = sqlx::query_as::<_, (String, String)>(
@@ -147,17 +154,20 @@ postgres_test! {
 }
 
 postgres_test! {
-    async fn remove_user_reports_missing_and_already_removed_ids(pool: PgPool) -> sqlx::Result<()> {
+    async fn removeself_user_reports_missing_and_already_removed_usernames(
+        pool: PgPool,
+    ) -> sqlx::Result<()> {
         let pool = transaction_pool(&pool).await?;
         let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
         sqlx::query("DELETE FROM available_user_ids WHERE user_id > 2")
             .execute(&pool)
             .await?;
-        let user_id = register_user(&handler, "known_user").await;
+        let username = "known_user";
+        let user_id = register_user(&handler, username, FIXTURE_HASH).await;
         assert_eq!(user_id, 1);
 
         assert!(matches!(
-            handler.remove_user(3).await,
+            handler.removeself_user("missing_user", FIXTURE_HASH).await,
             RemoveResponse::UserNotFound
         ));
         let available_ids =
@@ -167,11 +177,11 @@ postgres_test! {
         assert_eq!(available_ids, [2]);
 
         assert!(matches!(
-            handler.remove_user(user_id).await,
+            handler.removeself_user(username, FIXTURE_HASH).await,
             RemoveResponse::Success
         ));
         assert!(matches!(
-            handler.remove_user(user_id).await,
+            handler.removeself_user(username, FIXTURE_HASH).await,
             RemoveResponse::UserNotFound
         ));
         let available_ids =
@@ -186,12 +196,64 @@ postgres_test! {
 }
 
 postgres_test! {
-    async fn remove_user_keeps_dependent_rows_if_returning_id_fails(pool: PgPool) -> sqlx::Result<()> {
+    async fn removeself_user_rejects_another_users_hash_without_changes(
+        pool: PgPool,
+    ) -> sqlx::Result<()> {
         let pool = transaction_pool(&pool).await?;
         let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
-        let removed_id = register_user(&handler, "release_conflict").await;
+        let username = "protected_user";
+        let other_hash = "other-hash";
+        let user_id = i32::from(register_user(&handler, username, FIXTURE_HASH).await);
+        let other_user_id = i32::from(register_user(&handler, "other_user", other_hash).await);
+
+        sqlx::query("INSERT INTO messages (message_id, user_id, message) VALUES (11, $1, 'public')")
+            .bind(user_id)
+            .execute(&pool)
+            .await?;
+        sqlx::query(
+            "INSERT INTO private_messages (privatemessage_id, user_id, target_id, message)
+             VALUES (21, $1, $2, 'private')",
+        )
+        .bind(user_id)
+        .bind(other_user_id)
+        .execute(&pool)
+        .await?;
+
+        assert!(matches!(
+            handler.removeself_user(username, other_hash).await,
+            RemoveResponse::WrongCredentials
+        ));
+
+        let state = sqlx::query_as::<_, (bool, bool, bool, bool, bool, bool)>(
+            "SELECT EXISTS (SELECT 1 FROM users WHERE user_id = $1 AND password_hash = $3),
+                    EXISTS (SELECT 1 FROM users WHERE user_id = $2),
+                    EXISTS (SELECT 1 FROM user_information WHERE user_id = $1),
+                    EXISTS (SELECT 1 FROM messages WHERE user_id = $1),
+                    EXISTS (SELECT 1 FROM private_messages WHERE user_id = $1 AND target_id = $2),
+                    EXISTS (SELECT 1 FROM available_user_ids WHERE user_id IN ($1, $2))",
+        )
+        .bind(user_id)
+        .bind(other_user_id)
+        .bind(FIXTURE_HASH)
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(state, (true, true, true, true, true, false));
+
+        sqlx::query("ROLLBACK").execute(&pool).await?;
+        Ok(())
+    }
+}
+
+postgres_test! {
+    async fn removeself_user_keeps_dependent_rows_if_returning_id_fails(
+        pool: PgPool,
+    ) -> sqlx::Result<()> {
+        let pool = transaction_pool(&pool).await?;
+        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
+        let username = "release_conflict";
+        let removed_id = register_user(&handler, username, FIXTURE_HASH).await;
         let user_id = i32::from(removed_id);
-        let other_user_id = i32::from(register_user(&handler, "other_user").await);
+        let other_user_id = i32::from(register_user(&handler, "other_user", FIXTURE_HASH).await);
 
         sqlx::query(
             "INSERT INTO messages (message_id, user_id, message) VALUES (11, $1, 'public message')",
@@ -216,7 +278,7 @@ postgres_test! {
         sqlx::query("SAVEPOINT removal_attempt")
             .execute(&pool)
             .await?;
-        let response = handler.remove_user(removed_id).await;
+        let response = handler.removeself_user(username, FIXTURE_HASH).await;
         sqlx::query("ROLLBACK TO SAVEPOINT removal_attempt")
             .execute(&pool)
             .await?;

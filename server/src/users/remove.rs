@@ -27,6 +27,7 @@ type FlpcSink = SplitSink<Framed<TcpStream, FlpcCodec>, FlpcUnit>;
 pub enum RemoveResponse {
     Success,
     UserNotFound,
+    WrongCredentials,
     HandlerError,
 }
 
