@@ -8,6 +8,21 @@ use tokio::sync::Semaphore;
 pub(crate) mod registration;
 pub(crate) mod remove;
 
+fn check_length(
+    request: &Register,
+    max_len_username: usize,
+    max_len_password: usize,
+) -> bool {
+    if request.username().len() > max_len_username ||
+       request.username().len() == 0               ||
+       request.password().len() > max_len_password ||
+       request.password().len() == 0 {
+        true
+    } else {
+        false
+    }
+}
+
 /// Hashes the request's password while holding a semaphore permit.
 pub(crate) async fn hash_password(
     request: &Register,
@@ -24,6 +39,10 @@ pub(crate) async fn hash_password(
 
     Ok(hash.to_string())
 }
+
+#[cfg(test)]
+#[path = "../../tests/users/check_length.rs"]
+mod check_length_tests;
 
 #[cfg(test)]
 #[path = "../../tests/users/hash_password.rs"]

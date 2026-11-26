@@ -19,7 +19,7 @@ use flpc::tokio::{CodecError, FlpcCodec};
 
 use crate::database::users::UserRequest;
 
-use super::hash_password;
+use super::{check_length, hash_password};
 
 
 type FlpcSink = SplitSink<Framed<TcpStream, FlpcCodec>, FlpcUnit>;
@@ -136,21 +136,6 @@ fn check_token(
     }
 }
 
-fn check_length (
-    request: &Register, 
-    max_len_username: usize,
-    max_len_password: usize,
-) -> bool {
-    if request.username().len() > max_len_username ||
-       request.username().len() == 0               ||
-       request.password().len() > max_len_password ||
-       request.password().len() == 0 {
-        true
-    } else {
-        false
-    }
-}
-
 /// Sends an insert request and returns a handler error if either channel
 /// closes early.
 async fn try_insert(
@@ -183,10 +168,6 @@ async fn send_serverregister(
 #[cfg(test)]
 #[path = "../../tests/users/check_token.rs"]
 mod check_token_tests;
-
-#[cfg(test)]
-#[path = "../../tests/users/check_length.rs"]
-mod check_length_tests;
 
 #[cfg(test)]
 #[path = "../../tests/users/try_insert.rs"]
