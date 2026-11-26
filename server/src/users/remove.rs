@@ -116,13 +116,17 @@ async fn send_serverremoveself(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
     use std::time::Duration;
 
-    use flpc::unit::ServerUnit;
+    use flpc::unit::{Register, ServerUnit};
     use futures_util::StreamExt;
-    use tokio::{net::TcpListener, time::timeout};
+    use sqlx::PgPool;
+    use tokio::{net::TcpListener, sync::Semaphore, time::timeout};
 
     use super::*;
+    use crate::database::{serial_tests::postgres_test, users::UserHandler};
+    use crate::users::registration::handle_register;
 
     const LIMITS: (usize, usize) = (4, 6);
     const TEST_TIMEOUT: Duration = Duration::from_secs(5);
@@ -289,6 +293,68 @@ mod tests {
             })
             .await
             .expect("invalid removal should respond without a worker");
+        }
+    }
+
+    postgres_test! {
+        async fn registration_and_removal_use_the_real_worker(pool: PgPool) -> sqlx::Result<()> {
+            let (user_tx, user_rx) = mpsc::channel(1);
+            let permit = Arc::new(Semaphore::new(1));
+            let worker = UserHandler::new(pool.clone(), user_rx, Arc::clone(&permit));
+
+            timeout(Duration::from_secs(15), async {
+                let exercise = async move {
+                    let (sink, mut peer) = loopback().await;
+                    handle_register(
+                        Register::new("token".into(), "user".into(), "🔑é".into()),
+                        user_tx.clone(),
+                        permit,
+                        sink,
+                        "token",
+                        LIMITS.0,
+                        LIMITS.1,
+                    )
+                    .await;
+                    let registration = peer
+                        .next()
+                        .await
+                        .expect("registration reply")
+                        .expect("valid FLPC frame");
+                    let FlpcUnit::Server(ServerUnit::ServerRegister(registration)) = registration else {
+                        panic!("expected ServerRegister, got {registration:?}");
+                    };
+                    assert_eq!(*registration.outcome(), 0);
+
+                    for (password, code, account_exists) in [
+                        ("wrong", 1, true),
+                        ("🔑é", 0, false),
+                        ("🔑é", 3, false),
+                    ] {
+                        let (sink, mut peer) = loopback().await;
+                        handle_removeself(
+                            request("user", password),
+                            user_tx.clone(),
+                            sink,
+                            LIMITS.0,
+                            LIMITS.1,
+                        )
+                        .await;
+                        assert_eq!(read_result(&mut peer).await, code);
+                        let exists: bool = sqlx::query_scalar(
+                            "SELECT EXISTS (SELECT 1 FROM users WHERE username = $1)",
+                        )
+                        .bind("user")
+                        .fetch_one(&pool)
+                        .await?;
+                        assert_eq!(exists, account_exists, "account state after result {code}");
+                    }
+                    Ok(())
+                };
+                let ((), result) = tokio::join!(worker.run(), exercise);
+                result
+            })
+            .await
+            .expect("registration and removal should complete")
         }
     }
 }
