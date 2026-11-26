@@ -64,10 +64,10 @@ impl UserHandler {
     }
 
 
-    async fn remove_user(pool: &PgPool, user_id: u16) -> RemoveResponse {
+    async fn remove_user(&self, user_id: u16) -> RemoveResponse {
         let removal = sqlx::query(include_str!("queries/remove_user.sql"))
             .bind(i32::from(user_id))
-            .execute(pool)
+            .execute(&self.pool)
             .await;
 
         match removal {
