@@ -1,7 +1,7 @@
 use crate::database::serial_tests::postgres_test;
 
 use super::transaction_pool::{delete_completed, track_completed_deletes, transaction_pool};
-use super::{PgPool, RegResponse, RemoveResponse, UserHandler, remove_user};
+use super::{PgPool, RegResponse, RemoveResponse, UserHandler};
 
 async fn register_user(pool: &PgPool, username: &str) -> u16 {
     let RegResponse::Success(user_id) =
@@ -18,7 +18,7 @@ postgres_test! {
         let user_id = register_user(&pool, "remove_user_test").await;
 
         assert!(matches!(
-            remove_user(&pool, user_id).await,
+            UserHandler::remove_user(&pool, user_id).await,
             RemoveResponse::Success
         ));
 
@@ -65,7 +65,7 @@ postgres_test! {
         .await?;
 
         assert!(matches!(
-            remove_user(&pool, removed_id).await,
+            UserHandler::remove_user(&pool, removed_id).await,
             RemoveResponse::Success
         ));
 
@@ -118,7 +118,7 @@ postgres_test! {
         let released_id = register_user(&pool, "original_user").await;
         assert_eq!(released_id, 1);
         assert!(matches!(
-            remove_user(&pool, released_id).await,
+            UserHandler::remove_user(&pool, released_id).await,
             RemoveResponse::Success
         ));
 
@@ -153,7 +153,7 @@ postgres_test! {
         assert_eq!(user_id, 1);
 
         assert!(matches!(
-            remove_user(&pool, 3).await,
+            UserHandler::remove_user(&pool, 3).await,
             RemoveResponse::UserNotFound
         ));
         let available_ids =
@@ -163,11 +163,11 @@ postgres_test! {
         assert_eq!(available_ids, [2]);
 
         assert!(matches!(
-            remove_user(&pool, user_id).await,
+            UserHandler::remove_user(&pool, user_id).await,
             RemoveResponse::Success
         ));
         assert!(matches!(
-            remove_user(&pool, user_id).await,
+            UserHandler::remove_user(&pool, user_id).await,
             RemoveResponse::UserNotFound
         ));
         let available_ids =
@@ -211,7 +211,7 @@ postgres_test! {
         sqlx::query("SAVEPOINT removal_attempt")
             .execute(&pool)
             .await?;
-        let response = remove_user(&pool, removed_id).await;
+        let response = UserHandler::remove_user(&pool, removed_id).await;
         sqlx::query("ROLLBACK TO SAVEPOINT removal_attempt")
             .execute(&pool)
             .await?;
