@@ -1,7 +1,5 @@
-use std::error::Error;
 use std::sync::Arc;
 
-use argon2::{Argon2, PasswordHasher};
 use tokio::sync::{
     oneshot,
     mpsc,
@@ -20,6 +18,7 @@ use flpc::unit::{
 use flpc::tokio::{CodecError, FlpcCodec};
 
 use crate::database::users::UserRequest;
+use crate::hashing::hash_password;
 use crate::users::invalid_credential_lengths;
 
 type FlpcSink = SplitSink<Framed<TcpStream, FlpcCodec>, FlpcUnit>;
@@ -94,10 +93,7 @@ pub async fn handle_register(
         return
     }
 
-    let hashed_password = match hash_password(
-        &request,
-        hash_permit,
-    ).await {
+    let hashed_password = match hash_password(request.password(), hash_permit).await {
         Ok(hashed_password) => hashed_password,
         Err(_) => {
             // Internal Server Error
@@ -135,23 +131,6 @@ fn check_token(
     } else {
         true
     }
-}
-
-/// Hashes the request's password while holding a semaphore permit.
-async fn hash_password(
-    request: &Register,
-    hash_permit: Arc<Semaphore>,
-) -> Result<String, Box<dyn Error + Send + Sync>> {
-    let permit = hash_permit.acquire_owned().await?;
-    let password = request.password().clone();
-    let hash = tokio::task::spawn_blocking(move || {
-        // Keep the permit until hashing ends even if the caller is canceled.
-        let _permit = permit;
-        Argon2::default().hash_password(password.as_bytes())
-    })
-    .await??;
-
-    Ok(hash.to_string())
 }
 
 /// Sends an insert request and returns a handler error if either channel
