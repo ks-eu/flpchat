@@ -1,4 +1,6 @@
-use tokio::sync::mpsc;
+use std::sync::Arc;
+
+use tokio::sync::{Semaphore, mpsc};
 
 use crate::database::serial_tests::postgres_test;
 
@@ -8,7 +10,7 @@ use super::{PgPool, RegResponse, UserHandler};
 postgres_test! {
     async fn insert_user_success_rolls_back(pool: PgPool) -> sqlx::Result<()> {
         let tx_pool = transaction_pool(&pool).await?;
-        let handler = UserHandler::new(tx_pool.clone(), mpsc::channel(1).1);
+        let handler = UserHandler::new(tx_pool.clone(), mpsc::channel(1).1, Arc::new(Semaphore::new(1)));
         let username = "insert_user_test";
         let password_hash = "fixture-hash";
         let RegResponse::Success(user_id) =
@@ -62,7 +64,7 @@ postgres_test! {
 postgres_test! {
     async fn insert_user_claims_lowest_available_id(pool: PgPool) -> sqlx::Result<()> {
         let tx_pool = transaction_pool(&pool).await?;
-        let handler = UserHandler::new(tx_pool.clone(), mpsc::channel(1).1);
+        let handler = UserHandler::new(tx_pool.clone(), mpsc::channel(1).1, Arc::new(Semaphore::new(1)));
         sqlx::query("DELETE FROM available_user_ids WHERE user_id NOT IN (7, 42, 101)")
             .execute(&tx_pool)
             .await?;
@@ -86,7 +88,7 @@ postgres_test! {
 postgres_test! {
     async fn insert_user_claims_last_usable_id(pool: PgPool) -> sqlx::Result<()> {
         let tx_pool = transaction_pool(&pool).await?;
-        let handler = UserHandler::new(tx_pool.clone(), mpsc::channel(1).1);
+        let handler = UserHandler::new(tx_pool.clone(), mpsc::channel(1).1, Arc::new(Semaphore::new(1)));
         sqlx::query("DELETE FROM available_user_ids WHERE user_id <> 65535")
             .execute(&tx_pool)
             .await?;
@@ -108,7 +110,7 @@ postgres_test! {
 postgres_test! {
     async fn insert_user_creates_no_rows_when_id_pool_is_empty(pool: PgPool) -> sqlx::Result<()> {
         let tx_pool = transaction_pool(&pool).await?;
-        let handler = UserHandler::new(tx_pool.clone(), mpsc::channel(1).1);
+        let handler = UserHandler::new(tx_pool.clone(), mpsc::channel(1).1, Arc::new(Semaphore::new(1)));
         sqlx::query("DELETE FROM available_user_ids")
             .execute(&tx_pool)
             .await?;
@@ -133,7 +135,7 @@ postgres_test! {
 postgres_test! {
     async fn insert_user_preserves_existing_account_and_available_id(pool: PgPool) -> sqlx::Result<()> {
         let tx_pool = transaction_pool(&pool).await?;
-        let handler = UserHandler::new(tx_pool.clone(), mpsc::channel(1).1);
+        let handler = UserHandler::new(tx_pool.clone(), mpsc::channel(1).1, Arc::new(Semaphore::new(1)));
         sqlx::query("DELETE FROM available_user_ids WHERE user_id > 2")
             .execute(&tx_pool)
             .await?;
@@ -196,7 +198,7 @@ postgres_test! {
 postgres_test! {
     async fn insert_user_reports_duplicate_before_exhausted_pool(pool: PgPool) -> sqlx::Result<()> {
         let tx_pool = transaction_pool(&pool).await?;
-        let handler = UserHandler::new(tx_pool.clone(), mpsc::channel(1).1);
+        let handler = UserHandler::new(tx_pool.clone(), mpsc::channel(1).1, Arc::new(Semaphore::new(1)));
         sqlx::query("DELETE FROM available_user_ids WHERE user_id <> 1")
             .execute(&tx_pool)
             .await?;
@@ -224,7 +226,7 @@ postgres_test! {
 postgres_test! {
     async fn insert_user_restores_claimed_id_if_profile_insert_fails(pool: PgPool) -> sqlx::Result<()> {
         let tx_pool = transaction_pool(&pool).await?;
-        let handler = UserHandler::new(tx_pool.clone(), mpsc::channel(1).1);
+        let handler = UserHandler::new(tx_pool.clone(), mpsc::channel(1).1, Arc::new(Semaphore::new(1)));
         sqlx::query("DELETE FROM available_user_ids WHERE user_id <> 7")
             .execute(&tx_pool)
             .await?;

@@ -1,4 +1,6 @@
-use tokio::sync::mpsc;
+use std::sync::Arc;
+
+use tokio::sync::{Semaphore, mpsc};
 
 use crate::database::serial_tests::postgres_test;
 
@@ -19,7 +21,7 @@ postgres_test! {
         pool: PgPool,
     ) -> sqlx::Result<()> {
         let pool = transaction_pool(&pool).await?;
-        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
+        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1, Arc::new(Semaphore::new(1)));
         let username = "remove_user_test";
         let user_id = register_user(&handler, username, FIXTURE_HASH).await;
 
@@ -46,7 +48,7 @@ postgres_test! {
 postgres_test! {
     async fn removeself_user_returns_maximum_user_id(pool: PgPool) -> sqlx::Result<()> {
         let pool = transaction_pool(&pool).await?;
-        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
+        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1, Arc::new(Semaphore::new(1)));
         sqlx::query("DELETE FROM available_user_ids WHERE user_id <> 65535")
             .execute(&pool)
             .await?;
@@ -68,7 +70,7 @@ postgres_test! {
         pool: PgPool,
     ) -> sqlx::Result<()> {
         let pool = transaction_pool(&pool).await?;
-        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
+        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1, Arc::new(Semaphore::new(1)));
         let username = "recreated_user";
 
         for expected_id in [1, 2] {
@@ -87,7 +89,7 @@ postgres_test! {
 postgres_test! {
     async fn removeself_user_cascades_only_to_their_messages(pool: PgPool) -> sqlx::Result<()> {
         let pool = transaction_pool(&pool).await?;
-        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
+        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1, Arc::new(Semaphore::new(1)));
         let username = "removed_user";
         let removed_id = register_user(&handler, username, FIXTURE_HASH).await;
         let sender_id = register_user(&handler, "remaining_sender", FIXTURE_HASH).await;
@@ -164,7 +166,7 @@ postgres_test! {
 postgres_test! {
     async fn insert_user_skips_removed_user_id(pool: PgPool) -> sqlx::Result<()> {
         let pool = transaction_pool(&pool).await?;
-        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
+        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1, Arc::new(Semaphore::new(1)));
         let username = "original_user";
         let removed_id = register_user(&handler, username, FIXTURE_HASH).await;
         assert_eq!(removed_id, 1);
@@ -199,7 +201,7 @@ postgres_test! {
         pool: PgPool,
     ) -> sqlx::Result<()> {
         let pool = transaction_pool(&pool).await?;
-        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
+        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1, Arc::new(Semaphore::new(1)));
         sqlx::query("DELETE FROM available_user_ids WHERE user_id > 2")
             .execute(&pool)
             .await?;
@@ -241,7 +243,7 @@ postgres_test! {
         pool: PgPool,
     ) -> sqlx::Result<()> {
         let pool = transaction_pool(&pool).await?;
-        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
+        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1, Arc::new(Semaphore::new(1)));
         let username = "protected_user";
         let other_hash = "other-hash";
         let user_id = i32::from(register_user(&handler, username, FIXTURE_HASH).await);
@@ -288,7 +290,7 @@ postgres_test! {
 postgres_test! {
     async fn removeself_user_keeps_dependent_rows_if_deletion_fails(pool: PgPool) -> sqlx::Result<()> {
         let pool = transaction_pool(&pool).await?;
-        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
+        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1, Arc::new(Semaphore::new(1)));
         let username = "blocked_removal";
         let removed_id = register_user(&handler, username, FIXTURE_HASH).await;
         let user_id = i32::from(removed_id);

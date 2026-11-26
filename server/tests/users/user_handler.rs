@@ -42,11 +42,12 @@ postgres_test! {
             let mut peer = Framed::new(peer, FlpcCodec);
 
             let (user_tx, user_rx) = mpsc::channel(1);
-            let worker = UserHandler::new(pool.clone(), user_rx);
+            let permit = Arc::new(Semaphore::new(1));
+            let worker = UserHandler::new(pool.clone(), user_rx, Arc::clone(&permit));
             let registration = handle_register(
                 Register::new(token.into(), username.into(), password.into()),
                 user_tx,
-                Arc::new(Semaphore::new(1)),
+                permit,
                 sink,
                 token.into(),
                 32,
@@ -109,7 +110,7 @@ postgres_test! {
         drop(queue_registration(&user_tx, "first-user", "first-hash"));
         let reply = queue_registration(&user_tx, "second-user", "second-hash");
 
-        let worker = UserHandler::new(pool.clone(), user_rx);
+        let worker = UserHandler::new(pool.clone(), user_rx, Arc::new(Semaphore::new(1)));
         let ((), reply) = timeout(Duration::from_secs(5), async {
             tokio::join!(worker.run(), async move {
                 let result = reply.await;
@@ -146,7 +147,7 @@ postgres_test! {
         let reply = queue_registration(&user_tx, "queued-user", "queued-hash");
         drop(user_tx);
 
-        let worker = UserHandler::new(pool.clone(), user_rx);
+        let worker = UserHandler::new(pool.clone(), user_rx, Arc::new(Semaphore::new(1)));
         let ((), reply) = timeout(Duration::from_secs(5), async {
             tokio::join!(worker.run(), reply)
         })
