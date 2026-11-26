@@ -1,4 +1,6 @@
 Run tests with `./tests/test.sh`.
+Run `./tests/test-report.sh` for a grouped terminal report of the regular and
+performance suites.
 
 PostgreSQL tests must run sequentially. Use `postgres_test!` for tests with a
 migrated `PgPool`. The macro holds the shared lock through database setup, the
