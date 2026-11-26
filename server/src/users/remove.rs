@@ -35,3 +35,25 @@ pub struct RemoveRequest {
     response_tx: oneshot::Sender<RemoveResponse>,
 }
 
+impl RemoveRequest {
+    pub fn new(
+        id: u16,
+        response_tx: oneshot::Sender<RemoveResponse>,
+    ) -> Self {
+        Self {
+            id,
+            response_tx,
+        }
+    }
+
+    pub fn id(&self) -> &u16 {
+        &self.id
+    }
+
+    pub fn try_send(
+        self,
+        response: RemoveResponse,
+    ) -> Result<(), RemoveResponse> {
+        self.response_tx.send(response)
+    }
+}

@@ -34,7 +34,7 @@ impl UserHandler {
                     .await;
                     let _ = request.try_send(response);
                 }
-                UserRequest::RemoveRequest(request) => {
+                UserRequest::RemoveRequest(_) => {
                     todo!();
                 }
             }

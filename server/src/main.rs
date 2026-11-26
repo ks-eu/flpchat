@@ -9,12 +9,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Connected to PostgreSQL successfully.");
 
-    sqlx::migrate!("./migrations")
-        .run(&pool)
-        .await?;
-
-    println!("Users migration completed successfully.");
-
+     
     Ok(())
 }
 
