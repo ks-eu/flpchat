@@ -64,18 +64,19 @@ impl UserHandler {
     }
 
     async fn removeself_user(&self, username: &str, hashed_password: &str) -> RemoveSelfResponse {
-        let removal =
-            sqlx::query_as::<_, (Option<bool>, bool)>(include_str!("queries/removeself_user.sql"))
-                .bind(username)
-                .bind(hashed_password)
-                .fetch_one(&self.pool)
-                .await;
+        let removal = sqlx::query_as::<_, (Option<bool>, Option<i32>)>(include_str!(
+            "queries/removeself_user.sql"
+        ))
+        .bind(username)
+        .bind(hashed_password)
+        .fetch_one(&self.pool)
+        .await;
 
         match removal {
-            Ok((None, false)) => RemoveSelfResponse::UserNotFound,
-            Ok((Some(false), false)) => RemoveSelfResponse::WrongCredentials,
-            // shortcut: the query returns only a boolean until it can return the deleted ID.
-            Ok((Some(true), true)) => RemoveSelfResponse::Success(0),
+            Ok((None, None)) => RemoveSelfResponse::UserNotFound,
+            Ok((Some(false), None)) => RemoveSelfResponse::WrongCredentials,
+            // The users.user_id CHECK constraint enforces 1..=65535.
+            Ok((Some(true), Some(user_id))) => RemoveSelfResponse::Success(user_id as u16),
             _ => RemoveSelfResponse::HandlerError,
         }
     }

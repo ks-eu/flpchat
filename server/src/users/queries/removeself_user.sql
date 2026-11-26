@@ -8,4 +8,4 @@ WITH account AS (
     WHERE user_id = (SELECT user_id FROM account WHERE password_matches)
     RETURNING user_id
 )
-SELECT (SELECT password_matches FROM account), EXISTS (SELECT 1 FROM removed_user)
+SELECT (SELECT password_matches FROM account), (SELECT user_id FROM removed_user)
