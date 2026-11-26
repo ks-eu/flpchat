@@ -118,3 +118,11 @@ pub async fn remove_user(pool: &PgPool, user_id: u16) -> RemoveResponse {
 #[cfg(test)]
 #[path = "../../tests/users/insert_user.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../tests/users/transaction_pool.rs"]
+mod transaction_pool;
+
+#[cfg(test)]
+#[path = "../../tests/users/remove_user.rs"]
+mod remove_user_tests;
