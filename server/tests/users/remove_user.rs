@@ -142,3 +142,41 @@ postgres_test! {
         Ok(())
     }
 }
+
+postgres_test! {
+    async fn remove_user_reports_missing_and_already_removed_ids(pool: PgPool) -> sqlx::Result<()> {
+        let pool = transaction_pool(&pool).await?;
+        sqlx::query("DELETE FROM available_user_ids WHERE user_id > 2")
+            .execute(&pool)
+            .await?;
+        let user_id = register_user(&pool, "known_user").await;
+        assert_eq!(user_id, 1);
+
+        assert!(matches!(
+            remove_user(&pool, 3).await,
+            RemoveResponse::UserNotFound
+        ));
+        let available_ids =
+            sqlx::query_scalar::<_, i32>("SELECT user_id FROM available_user_ids ORDER BY user_id")
+                .fetch_all(&pool)
+                .await?;
+        assert_eq!(available_ids, [2]);
+
+        assert!(matches!(
+            remove_user(&pool, user_id).await,
+            RemoveResponse::Success
+        ));
+        assert!(matches!(
+            remove_user(&pool, user_id).await,
+            RemoveResponse::UserNotFound
+        ));
+        let available_ids =
+            sqlx::query_scalar::<_, i32>("SELECT user_id FROM available_user_ids ORDER BY user_id")
+                .fetch_all(&pool)
+                .await?;
+        assert_eq!(available_ids, [1, 2]);
+
+        sqlx::query("ROLLBACK").execute(&pool).await?;
+        Ok(())
+    }
+}
