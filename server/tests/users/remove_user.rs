@@ -111,3 +111,34 @@ postgres_test! {
         Ok(())
     }
 }
+
+postgres_test! {
+    async fn insert_user_reuses_the_lowest_released_id(pool: PgPool) -> sqlx::Result<()> {
+        let pool = transaction_pool(&pool).await?;
+        let released_id = register_user(&pool, "original_user").await;
+        assert_eq!(released_id, 1);
+        assert!(matches!(
+            remove_user(&pool, released_id).await,
+            RemoveResponse::Success
+        ));
+
+        let new_username = "replacement_user";
+        let new_id = register_user(&pool, new_username).await;
+        assert_eq!(new_id, released_id);
+
+        let account_and_profile = sqlx::query_as::<_, (String, String)>(
+            "SELECT users.username, user_information.username
+             FROM users JOIN user_information USING (user_id) WHERE user_id = $1",
+        )
+        .bind(i32::from(new_id))
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(
+            account_and_profile,
+            (new_username.to_owned(), new_username.to_owned())
+        );
+
+        sqlx::query("ROLLBACK").execute(&pool).await?;
+        Ok(())
+    }
+}
