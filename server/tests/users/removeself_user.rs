@@ -25,7 +25,7 @@ postgres_test! {
 
         assert!(matches!(
             handler.removeself_user(username, FIXTURE_HASH).await,
-            RemoveSelfResponse::Success(_)
+            RemoveSelfResponse::Success(removed_id) if removed_id == user_id
         ));
 
         let counts = sqlx::query_as::<_, (i64, i64, i64)>(
@@ -37,6 +37,47 @@ postgres_test! {
         .fetch_one(&pool)
         .await?;
         assert_eq!(counts, (0, 0, 0));
+
+        sqlx::query("ROLLBACK").execute(&pool).await?;
+        Ok(())
+    }
+}
+
+postgres_test! {
+    async fn removeself_user_returns_maximum_user_id(pool: PgPool) -> sqlx::Result<()> {
+        let pool = transaction_pool(&pool).await?;
+        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
+        sqlx::query("DELETE FROM available_user_ids WHERE user_id <> 65535")
+            .execute(&pool)
+            .await?;
+        let username = "last_user";
+        assert_eq!(register_user(&handler, username, FIXTURE_HASH).await, u16::MAX);
+
+        assert!(matches!(
+            handler.removeself_user(username, FIXTURE_HASH).await,
+            RemoveSelfResponse::Success(u16::MAX)
+        ));
+
+        sqlx::query("ROLLBACK").execute(&pool).await?;
+        Ok(())
+    }
+}
+
+postgres_test! {
+    async fn removeself_user_returns_current_id_for_recreated_username(
+        pool: PgPool,
+    ) -> sqlx::Result<()> {
+        let pool = transaction_pool(&pool).await?;
+        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
+        let username = "recreated_user";
+
+        for expected_id in [1, 2] {
+            assert_eq!(register_user(&handler, username, FIXTURE_HASH).await, expected_id);
+            assert!(matches!(
+                handler.removeself_user(username, FIXTURE_HASH).await,
+                RemoveSelfResponse::Success(removed_id) if removed_id == expected_id
+            ));
+        }
 
         sqlx::query("ROLLBACK").execute(&pool).await?;
         Ok(())
@@ -74,7 +115,7 @@ postgres_test! {
 
         assert!(matches!(
             handler.removeself_user(username, FIXTURE_HASH).await,
-            RemoveSelfResponse::Success(_)
+            RemoveSelfResponse::Success(user_id) if user_id == removed_id
         ));
 
         let public_messages = sqlx::query_as::<_, (i32, i32, String)>(
@@ -129,7 +170,7 @@ postgres_test! {
         assert_eq!(removed_id, 1);
         assert!(matches!(
             handler.removeself_user(username, FIXTURE_HASH).await,
-            RemoveSelfResponse::Success(_)
+            RemoveSelfResponse::Success(user_id) if user_id == removed_id
         ));
 
         let new_username = "replacement_user";
@@ -178,7 +219,7 @@ postgres_test! {
 
         assert!(matches!(
             handler.removeself_user(username, FIXTURE_HASH).await,
-            RemoveSelfResponse::Success(_)
+            RemoveSelfResponse::Success(removed_id) if removed_id == user_id
         ));
         assert!(matches!(
             handler.removeself_user(username, FIXTURE_HASH).await,
