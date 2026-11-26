@@ -1,5 +1,9 @@
 {
   "components": {
+    "create-pool": {
+      "title": "create_pool",
+      "inputs": "DATABASE_URL (environment)"
+    },
     "credential-lengths": {
       "title": "invalid_credential_lengths",
       "inputs": "username: &str, password: &str, max_len_username: usize, max_len_password: usize"
@@ -14,6 +18,14 @@
     }
   },
   "cases": {
+    "database::create_pool_tests::create_pool_connects_to_postgres": {
+      "id": "pool-connect",
+      "component": "create-pool",
+      "suite": "regular",
+      "alias": "Connects to the test database",
+      "input": "Runner-provided DATABASE_URL and its ready PostgreSQL instance",
+      "expected": "Ok(pool) and SELECT 1 returns 1. Close the pool."
+    },
     "users::check_length_tests::length_min": {
       "id": "length-min",
       "component": "credential-lengths",
