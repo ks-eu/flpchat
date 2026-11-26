@@ -1,6 +1,9 @@
-use sqlx::PgPool;
-use tokio::sync::mpsc;
+use std::error::Error;
+use std::sync::Arc;
 
+use sqlx::PgPool;
+use tokio::sync::{mpsc, Semaphore};
+use argon2::{Argon2, PasswordVerifier, PasswordHash};
 use crate::users::registration::{RegRequest, RegResponse};
 use crate::users::remove::{RemoveSelfRequest, RemoveSelfResponse};
 
@@ -82,6 +85,54 @@ impl UserHandler {
             _ => RemoveSelfResponse::HandlerError,
         }
     }
+
+    async fn verify_credentials(
+        &self,
+        username: &str,
+        password: &str,
+        hash_permit: Arc<Semaphore>,
+        ret: bool
+    ) -> Result<Option<&str>, Box<dyn Error + Send + Sync>> {
+        let hashed_password = match self.get_hashed_password(username).await {
+            Ok(Some(hash)) => hash,
+            Ok(None) => {
+                return Ok(None)
+            }
+            Err(_) => {
+                return Ok(None)
+            }
+        };
+
+        let permit = hash_permit.acquire_owned().await?;
+        let hash = hashed_password.clone();
+        let verify = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            let parsed_hash = PasswordHash::new(&hash)?;
+            Ok(Argon2::default().verify_password(password.as_bytes(), &parsed_hash).is_ok())
+        }).await?;
+        
+        match verify {
+            Ok(true) => Ok(Some(&hashed_password)),
+            Ok(false) => Ok(None),
+            Err(err) => err,
+        }
+
+
+    }
+
+    async fn get_hashed_password(
+        &self,
+        username: &str,
+    ) -> Result<Option<String>, sqlx::Error> {
+        let hash: Option<String> = sqlx::query_scalar(
+            "SELECT password_hash FROM users WHERE username = $1"
+        )
+        .bind(username)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(hash)
+    }
+
 }
 
 #[cfg(test)]
