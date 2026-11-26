@@ -113,3 +113,56 @@ postgres_test! {
         tx.rollback().await
     }
 }
+
+postgres_test! {
+    async fn remove_user_query_execution_time_with_message_history(
+        pool: PgPool,
+    ) -> sqlx::Result<()> {
+        let mut tx = pool.begin().await?;
+        // Each peer exchanges ten messages in each direction with user 1 and sends ten to the next peer.
+        sqlx::raw_sql(
+            "DELETE FROM available_user_ids WHERE user_id BETWEEN 1 AND 6;
+             INSERT INTO users (user_id, username, password_hash)
+             OVERRIDING SYSTEM VALUE
+             SELECT user_id, 'timing_user_' || user_id, 'fixture-hash'
+             FROM generate_series(1, 6) AS fixture(user_id);
+             INSERT INTO user_information (user_id, username)
+             SELECT user_id, username FROM users;
+             INSERT INTO messages (message_id, user_id, message)
+             SELECT (user_id - 1) * 1000 + n, user_id, 'public ' || n
+             FROM users CROSS JOIN generate_series(1, 1000) AS message(n);
+             INSERT INTO private_messages (privatemessage_id, user_id, target_id, message)
+             SELECT (peer_id - 2) * 10 + n, 1, peer_id, 'outgoing ' || n
+             FROM generate_series(2, 6) AS peer(peer_id)
+             CROSS JOIN generate_series(1, 10) AS message(n)
+             UNION ALL
+             SELECT 50 + (peer_id - 2) * 10 + n, peer_id, 1, 'incoming ' || n
+             FROM generate_series(2, 6) AS peer(peer_id)
+             CROSS JOIN generate_series(1, 10) AS message(n)
+             UNION ALL
+             SELECT 100 + (peer_id - 2) * 10 + n, peer_id, 2 + (peer_id - 1) % 5, 'peer ' || n
+             FROM generate_series(2, 6) AS peer(peer_id)
+             CROSS JOIN generate_series(1, 10) AS message(n);",
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        let mut arguments = PgArguments::default();
+        arguments.add(1_i32).map_err(sqlx::Error::Encode)?;
+        measure_query(
+            &mut tx,
+            "remove_user with message history",
+            EXPLAIN_REMOVE,
+            arguments,
+            "SELECT EXISTS (SELECT 1 FROM available_user_ids WHERE user_id = 1)
+             AND NOT EXISTS (SELECT 1 FROM users WHERE user_id = 1)
+             AND NOT EXISTS (SELECT 1 FROM user_information WHERE user_id = 1)
+             AND NOT EXISTS (SELECT 1 FROM messages WHERE user_id = 1)
+             AND NOT EXISTS (SELECT 1 FROM private_messages WHERE 1 IN (user_id, target_id))
+             AND (SELECT count(*) FROM messages) = 5000
+             AND (SELECT count(*) FROM private_messages) = 50",
+        )
+        .await?;
+        tx.rollback().await
+    }
+}
