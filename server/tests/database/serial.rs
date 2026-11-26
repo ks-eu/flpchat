@@ -9,7 +9,7 @@ pub(crate) fn lock() -> MutexGuard<'static, ()> {
 }
 
 macro_rules! postgres_test {
-    (async fn $name:ident($pool:ident: $pool_type:ident) -> sqlx::Result<()> $body:block) => {
+    (async fn $name:ident($pool:ident: $pool_type:ident $(,)?) -> sqlx::Result<()> $body:block) => {
         #[test]
         #[ignore = "requires PostgreSQL via DATABASE_URL"]
         #[allow(unnameable_test_items)]

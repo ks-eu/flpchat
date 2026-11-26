@@ -126,3 +126,7 @@ mod transaction_pool;
 #[cfg(test)]
 #[path = "../../tests/users/remove_user.rs"]
 mod remove_user_tests;
+
+#[cfg(test)]
+#[path = "../../tests/users/user_handler.rs"]
+mod user_handler_tests;
