@@ -28,8 +28,13 @@ impl UserHandler {
                         .await;
                     let _ = request.try_send(response);
                 }
-                UserRequest::RemoveSelfRequest(_) => {
-                    todo!();
+                UserRequest::RemoveSelfRequest(request) => {
+                    let response = self
+                        .removeself_user(
+                            request.username(),
+                            request.hashed_password(),
+                        ).await;
+                    let _ = request.try_send(response);
                 }
             }
         }

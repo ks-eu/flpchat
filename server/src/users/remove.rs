@@ -31,23 +31,30 @@ pub enum RemoveSelfResponse {
 }
 
 pub struct RemoveSelfRequest {
-    id: u16,
+    username: String,
+    hashed_password: String,
     response_tx: oneshot::Sender<RemoveSelfResponse>,
 }
 
 impl RemoveSelfRequest {
     pub fn new(
-        id: u16,
+        username: String,
+        hashed_password: String,
         response_tx: oneshot::Sender<RemoveSelfResponse>,
     ) -> Self {
         Self {
-            id,
+            username,
+            hashed_password,
             response_tx,
         }
     }
 
-    pub fn id(&self) -> &u16 {
-        &self.id
+    pub fn username(&self) -> &str {
+        &self.username
+    }
+
+    pub fn hashed_password(&self) -> &str {
+        &self.hashed_password
     }
 
     pub fn try_send(
@@ -59,10 +66,13 @@ impl RemoveSelfRequest {
 }
 
 
-pub fn handle_removeself(
+pub async fn handle_removeself(
     request: RemoveSelf,
     user_tx: mpsc::Sender<UserRequest>,
+    hash_permit: Arc<Semaphore>,
     sink: FlpcSink,
+    max_len_username: usize,
+    max_len_password: usize,
 ) {
     todo!();
 }
