@@ -1,0 +1,162 @@
+{
+  "components": {
+    "credential-lengths": {
+      "title": "invalid_credential_lengths",
+      "inputs": "username: &str, password: &str, max_len_username: usize, max_len_password: usize"
+    },
+    "verify-password": {
+      "title": "verify_password",
+      "inputs": "password: &str, hashed_password: &str"
+    },
+    "hash-password": {
+      "title": "hash_password",
+      "inputs": "password: &str, hash_permit: Arc<Semaphore>"
+    }
+  },
+  "cases": {
+    "users::check_length_tests::length_min": {
+      "id": "length-min",
+      "component": "credential-lengths",
+      "suite": "regular",
+      "alias": "Accepts one byte each",
+      "input": "username \"a\", password \"b\", limits 4 and 6",
+      "expected": "false"
+    },
+    "users::check_length_tests::length_exact": {
+      "id": "length-exact",
+      "component": "credential-lengths",
+      "suite": "regular",
+      "alias": "Accepts exact ASCII limits",
+      "input": "username \"user\", password \"secret\", limits 4 and 6",
+      "expected": "false"
+    },
+    "users::check_length_tests::length_empty_user": {
+      "id": "length-empty-user",
+      "component": "credential-lengths",
+      "suite": "regular",
+      "alias": "Rejects empty username",
+      "input": "username \"\", password \"secret\", limits 4 and 6",
+      "expected": "true"
+    },
+    "users::check_length_tests::length_empty_password": {
+      "id": "length-empty-password",
+      "component": "credential-lengths",
+      "suite": "regular",
+      "alias": "Rejects empty password",
+      "input": "username \"user\", password \"\", limits 4 and 6",
+      "expected": "true"
+    },
+    "users::check_length_tests::length_both_empty": {
+      "id": "length-both-empty",
+      "component": "credential-lengths",
+      "suite": "regular",
+      "alias": "Rejects two empty fields",
+      "input": "username \"\", password \"\", limits 4 and 6",
+      "expected": "true"
+    },
+    "users::check_length_tests::length_long_user": {
+      "id": "length-long-user",
+      "component": "credential-lengths",
+      "suite": "regular",
+      "alias": "Rejects username one byte over",
+      "input": "username \"users\", password \"secret\", limits 4 and 6",
+      "expected": "true"
+    },
+    "users::check_length_tests::length_long_password": {
+      "id": "length-long-password",
+      "component": "credential-lengths",
+      "suite": "regular",
+      "alias": "Rejects password one byte over",
+      "input": "username \"user\", password \"secrets\", limits 4 and 6",
+      "expected": "true"
+    },
+    "users::check_length_tests::length_zero_user": {
+      "id": "length-zero-user",
+      "component": "credential-lengths",
+      "suite": "regular",
+      "alias": "Rejects a zero username limit",
+      "input": "username \"a\", password \"b\", limits 0 and 6",
+      "expected": "true"
+    },
+    "users::check_length_tests::length_zero_password": {
+      "id": "length-zero-password",
+      "component": "credential-lengths",
+      "suite": "regular",
+      "alias": "Rejects a zero password limit",
+      "input": "username \"a\", password \"b\", limits 4 and 0",
+      "expected": "true"
+    },
+    "users::check_length_tests::length_multi_exact": {
+      "id": "length-multi-exact",
+      "component": "credential-lengths",
+      "suite": "regular",
+      "alias": "Accepts exact UTF-8 byte limits",
+      "input": "username \"éé\", password \"🔑é\", limits 4 and 6",
+      "expected": "false"
+    },
+    "users::check_length_tests::length_multi_user": {
+      "id": "length-multi-user",
+      "component": "credential-lengths",
+      "suite": "regular",
+      "alias": "Counts username bytes",
+      "input": "username \"éé\", password \"🔑é\", limits 3 and 6",
+      "expected": "true"
+    },
+    "users::check_length_tests::length_multi_password": {
+      "id": "length-multi-password",
+      "component": "credential-lengths",
+      "suite": "regular",
+      "alias": "Counts password bytes",
+      "input": "username \"éé\", password \"🔑é\", limits 4 and 5",
+      "expected": "true"
+    },
+    "hashing::verify_password_tests::password_match": {
+      "id": "password-match",
+      "component": "verify-password",
+      "suite": "regular",
+      "alias": "Verifies exact plaintext",
+      "input": "password \"café🔑\", hash H(\"café🔑\")",
+      "expected": "Ok(true)"
+    },
+    "hashing::verify_password_tests::password_wrong": {
+      "id": "password-wrong",
+      "component": "verify-password",
+      "suite": "regular",
+      "alias": "Rejects different plaintext",
+      "input": "password \"wrong\", hash H(\"café🔑\")",
+      "expected": "Ok(false)"
+    },
+    "hashing::verify_password_tests::password_malformed": {
+      "id": "password-malformed",
+      "component": "verify-password",
+      "suite": "regular",
+      "alias": "Rejects malformed hash encoding",
+      "input": "password \"café🔑\", hash \"invalid-phc\"",
+      "expected": "parsing error"
+    },
+    "hashing::verify_password_tests::password_unsupported": {
+      "id": "password-unsupported",
+      "component": "verify-password",
+      "suite": "regular",
+      "alias": "Rejects an unsupported hash algorithm",
+      "input": "password \"café🔑\", hash H(\"café🔑\") with \"argon2id\" replaced by \"scrypt\"",
+      "expected": "verification error"
+    },
+    "database::users::query_performance_tests::perf_hash": {
+      "id": "perf-hash",
+      "component": "hash-password",
+      "suite": "performance",
+      "alias": "Hashes the timing password",
+      "input": "hash_password(\"timing-password\", one-permit semaphore)",
+      "expected": "The warm-up hash verifies the exact password; report 20 measured samples in milliseconds."
+    },
+    "database::users::query_performance_tests::perf_verify_password": {
+      "id": "perf-verify-password",
+      "component": "verify-password",
+      "suite": "performance",
+      "alias": "Verifies the timing password",
+      "input": "verify_password(\"timing-password\", precomputed hash)",
+      "expected": "Ok(true) for each call; report 20 measured samples in milliseconds."
+    }
+  }
+}
