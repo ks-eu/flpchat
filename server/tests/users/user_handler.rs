@@ -138,3 +138,23 @@ postgres_test! {
         Ok(())
     }
 }
+
+postgres_test! {
+    async fn worker_drains_queued_registration_before_shutting_down(pool: PgPool) -> sqlx::Result<()> {
+        let pool = transaction_pool(&pool).await?;
+        let (user_tx, user_rx) = mpsc::channel(1);
+        let reply = queue_registration(&user_tx, "queued-user", "queued-hash");
+        drop(user_tx);
+
+        let worker = UserHandler::new(pool.clone(), user_rx);
+        let ((), reply) = timeout(Duration::from_secs(5), async {
+            tokio::join!(worker.run(), reply)
+        })
+        .await
+        .expect("worker should deliver its reply and exit");
+        assert!(matches!(reply, Ok(RegResponse::Success(_))));
+
+        sqlx::query("ROLLBACK").execute(&pool).await?;
+        Ok(())
+    }
+}
