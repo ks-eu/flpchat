@@ -36,3 +36,78 @@ postgres_test! {
         Ok(())
     }
 }
+
+postgres_test! {
+    async fn remove_user_cascades_only_to_their_messages(pool: PgPool) -> sqlx::Result<()> {
+        let pool = transaction_pool(&pool).await?;
+        let removed_id = register_user(&pool, "removed_user").await;
+        let sender_id = register_user(&pool, "remaining_sender").await;
+        let recipient_id = register_user(&pool, "remaining_recipient").await;
+
+        sqlx::query(
+            "INSERT INTO messages (message_id, user_id, message)
+             VALUES (11, $1, 'removed public message'), (12, $2, 'remaining public message')",
+        )
+        .bind(i32::from(removed_id))
+        .bind(i32::from(sender_id))
+        .execute(&pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO private_messages (privatemessage_id, user_id, target_id, message)
+             VALUES (21, $1, $2, 'removed outgoing message'),
+                    (22, $2, $1, 'removed incoming message'),
+                    (23, $2, $3, 'remaining private message')",
+        )
+        .bind(i32::from(removed_id))
+        .bind(i32::from(sender_id))
+        .bind(i32::from(recipient_id))
+        .execute(&pool)
+        .await?;
+
+        assert!(matches!(
+            remove_user(&pool, removed_id).await,
+            RemoveResponse::Success
+        ));
+
+        let public_messages = sqlx::query_as::<_, (i32, i32, String)>(
+            "SELECT message_id::int, user_id, message FROM messages",
+        )
+        .fetch_all(&pool)
+        .await?;
+        assert_eq!(
+            public_messages,
+            [(
+                12,
+                i32::from(sender_id),
+                "remaining public message".to_owned()
+            )]
+        );
+
+        let private_messages = sqlx::query_as::<_, (i32, i32, i32, String)>(
+            "SELECT privatemessage_id::int, user_id, target_id, message FROM private_messages",
+        )
+        .fetch_all(&pool)
+        .await?;
+        assert_eq!(
+            private_messages,
+            [(
+                23,
+                i32::from(sender_id),
+                i32::from(recipient_id),
+                "remaining private message".to_owned()
+            )]
+        );
+
+        let remaining_profiles =
+            sqlx::query_scalar::<_, String>("SELECT username FROM user_information ORDER BY username")
+                .fetch_all(&pool)
+                .await?;
+        assert_eq!(
+            remaining_profiles,
+            ["remaining_recipient", "remaining_sender"]
+        );
+
+        sqlx::query("ROLLBACK").execute(&pool).await?;
+        Ok(())
+    }
+}
