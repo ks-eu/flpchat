@@ -1,6 +1,7 @@
 mod database;
 mod connection;
-mod messages;
+mod orchestration;
+mod onboarding;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
