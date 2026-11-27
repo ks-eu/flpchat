@@ -1,6 +1,7 @@
 //! basic spec, 64 bit id? just do:
 //! - 6 bytes [timestamp]
 //! - 2 bytes [id]
+pub mod generator;
 
 pub struct LimId {
     id: u64,
