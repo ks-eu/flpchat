@@ -352,7 +352,7 @@
       "suite": "regular",
       "alias": "Rolls back when profile insertion fails",
       "input": "IDs=[7], constraint rejects profile username \"blocked\", insert_user(\"blocked\", \"fixture-password\")",
-      "expected": "HandlerError. Neither row survives and ID 7 remains available."
+      "expected": "A profile constraint failure rolls back the claim in the same statement. The handler returns HandlerError before hashing."
     },
     "database::users::tests::insert_hash_failure_reuses_id": {
       "id": "insert-hash-failure-reuses-id",
@@ -984,7 +984,7 @@
       "suite": "performance",
       "alias": "Claims an ID and inserts a new account (PostgreSQL Execution Time)",
       "input": "\"bench-new\", the precomputed timing-password fixture hash, and 1,000 existing accounts",
-      "expected": "ID 1001 is claimed, then its account and profile are inserted. Sum the claim, provisional insert, and password update execution times."
+      "expected": "ID 1001 is claimed, then its account and profile are inserted. Sum the combined claim and provisional insert statement and the password update."
     },
     "database::users::query_performance_tests::perf_register_tcp": {
       "id": "perf-register-tcp",

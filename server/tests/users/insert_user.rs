@@ -265,7 +265,7 @@ postgres_test! {
 
 // Alias: Rolls back when profile insertion fails
 // Input: IDs=[7], constraint rejects profile username "blocked", insert_user("blocked", "fixture-password")
-// Expected: HandlerError. Neither row survives and ID 7 remains available.
+// Expected: The failed SQL statement preserves ID 7. The handler returns HandlerError before hashing.
 postgres_test! {
     async fn insert_profile_error(pool: PgPool) -> sqlx::Result<()> {
         set_available_ids(&pool, &[7]).await?;
@@ -275,6 +275,17 @@ postgres_test! {
         )
         .execute(&pool)
         .await?;
+
+        let error = sqlx::query_as::<_, (bool, Option<i32>)>(include_str!(
+            "../../src/database/queries/insert_user.sql"
+        ))
+        .bind("blocked")
+        .fetch_one(&pool)
+        .await
+        .expect_err("the combined query should reject the invalid profile");
+        assert!(matches!(error, sqlx::Error::Database(error)
+            if error.constraint() == Some("reject_fixture_username")));
+        assert_eq!(available_ids(&pool).await?, [7]);
 
         let response = timeout(
             CLAIM_TIMEOUT,
