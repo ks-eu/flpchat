@@ -46,4 +46,38 @@
 //! "single receiver" trait. private messages are sent to both.
 //!
 //! desperately need a servermessagefail and serverprivatemessagefail variant.
-//! could just send 0s? its not clean though.
+//! could just send 0s? its not clean though
+//!
+use std::collections::HashMap;
+
+use tokio::sync::mpsc;
+
+use flpc::unit::{
+    FlpcUnit,
+    ServerMessage,
+    UserJoined,
+    UserLeft,
+    UserRegistered,
+    UserRemoved,
+    ChangedUsername,
+};
+
+trait Broadcastable: Into<FlpcUnit> {}
+
+impl Broadcastable for ServerMessage {}
+impl Broadcastable for UserJoined {}
+impl Broadcastable for UserLeft {}
+impl Broadcastable for UserRegistered {}
+impl Broadcastable for UserRemoved {}
+impl Broadcastable for ChangedUsername {}
+
+fn broadcast(
+    unit: impl Broadcastable,
+    writers: &HashMap<u16, mpsc::Sender<FlpcUnit>>,
+) {
+    let unit: FlpcUnit = unit.into();
+
+    for tx in writers.values() {
+        let _ = tx.try_send(unit.clone());
+    }
+}
