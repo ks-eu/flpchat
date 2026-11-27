@@ -11,7 +11,7 @@ use tokio::{
 use crate::database::{hash::verify_password, serial_tests::postgres_test};
 
 use super::{
-    RegRequest, RegResponse, RemoveSelfRequest, RemoveSelfResponse, UserHandler, UserRequest,
+    LoginRequest, LoginResponse, RegRequest, RegResponse, RemoveSelfRequest, RemoveSelfResponse, UserHandler, UserRequest,
 };
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(5);
@@ -77,6 +77,22 @@ fn queue_removal(
     let (reply_tx, reply_rx) = oneshot::channel();
     user_tx
         .try_send(UserRequest::RemoveSelfRequest(RemoveSelfRequest::new(
+            username.into(),
+            password.into(),
+            reply_tx,
+        )))
+        .unwrap();
+    reply_rx
+}
+
+fn queue_login(
+    user_tx: &mpsc::Sender<UserRequest>,
+    username: &str,
+    password: &str,
+) -> oneshot::Receiver<LoginResponse> {
+    let (reply_tx, reply_rx) = oneshot::channel();
+    user_tx
+        .try_send(UserRequest::LoginRequest(LoginRequest::new(
             username.into(),
             password.into(),
             reply_tx,
@@ -354,6 +370,96 @@ postgres_test! {
         assert_eq!(profile_id(&pool, "queued").await?, Some(7));
         assert!(available_ids(&pool).await?.is_empty());
 
+        Ok(())
+    }
+}
+
+postgres_test! {
+    async fn worker_login_success(pool: PgPool) -> sqlx::Result<()> {
+        set_available_ids(&pool, &[8]).await?;
+        let hash = Argon2::default().hash_password("café🔑".as_bytes()).unwrap().to_string();
+        seed_account(&pool, 65535, "Élodie", &hash).await?;
+        let (user_tx, worker) = start_worker(&pool);
+        let reply = queue_login(&user_tx, "Élodie", "café🔑");
+        let result = reply_and_finish(user_tx, worker, reply).await;
+
+        assert!(matches!(result, LoginResponse::Success(u16::MAX)));
+        assert_eq!(account(&pool, "Élodie").await?, Some((65535, hash)));
+        assert_eq!(profile_id(&pool, "Élodie").await?, Some(65535));
+        assert_eq!(available_ids(&pool).await?, [8]);
+        Ok(())
+    }
+}
+
+postgres_test! {
+    async fn worker_login_rejects_credentials(pool: PgPool) -> sqlx::Result<()> {
+        let hash = Argon2::default().hash_password("café🔑".as_bytes()).unwrap().to_string();
+        seed_account(&pool, 7, "Élodie", &hash).await?;
+        let (user_tx, worker) = start_worker(&pool);
+        let wrong = queue_login(&user_tx, "Élodie", "cafe\u{301}🔑");
+        let missing = queue_login(&user_tx, "élodie", "café🔑");
+
+        assert!(matches!(timeout(TEST_TIMEOUT, wrong).await, Ok(Ok(LoginResponse::WrongCredentials))));
+        let result = reply_and_finish(user_tx, worker, missing).await;
+        assert!(matches!(result, LoginResponse::UserNotFound));
+        assert_eq!(account(&pool, "Élodie").await?, Some((7, hash)));
+        Ok(())
+    }
+}
+
+postgres_test! {
+    async fn worker_login_bad_hash(pool: PgPool) -> sqlx::Result<()> {
+        seed_account(&pool, 7, "target", "invalid-phc").await?;
+        let (user_tx, worker) = start_worker(&pool);
+        let reply = queue_login(&user_tx, "target", "secret");
+        let result = reply_and_finish(user_tx, worker, reply).await;
+        assert!(matches!(result, LoginResponse::HandlerError));
+        Ok(())
+    }
+}
+
+postgres_test! {
+    async fn worker_login_closed_semaphore(pool: PgPool) -> sqlx::Result<()> {
+        let hash = Argon2::default().hash_password(b"secret").unwrap().to_string();
+        seed_account(&pool, 7, "target", &hash).await?;
+        let (user_tx, user_rx) = mpsc::channel(2);
+        let permit = Arc::new(Semaphore::new(1));
+        permit.close();
+        let worker = tokio::spawn(UserHandler::new(pool, user_rx).run(permit));
+        let existing = queue_login(&user_tx, "target", "secret");
+        let missing = queue_login(&user_tx, "absent", "secret");
+
+        assert!(matches!(timeout(TEST_TIMEOUT, existing).await, Ok(Ok(LoginResponse::HandlerError))));
+        let result = reply_and_finish(user_tx, worker, missing).await;
+        assert!(matches!(result, LoginResponse::UserNotFound));
+        Ok(())
+    }
+}
+
+postgres_test! {
+    async fn worker_login_closed_pool(pool: PgPool) -> sqlx::Result<()> {
+        pool.close().await;
+        let (user_tx, worker) = start_worker(&pool);
+        let reply = queue_login(&user_tx, "target", "secret");
+        let result = reply_and_finish(user_tx, worker, reply).await;
+        assert!(matches!(result, LoginResponse::HandlerError));
+        Ok(())
+    }
+}
+
+postgres_test! {
+    async fn worker_login_dropped_reply(pool: PgPool) -> sqlx::Result<()> {
+        let hash = Argon2::default().hash_password(b"secret").unwrap().to_string();
+        seed_account(&pool, 7, "target", &hash).await?;
+        let (user_tx, user_rx) = mpsc::channel(2);
+        drop(queue_login(&user_tx, "target", "secret"));
+        let reply = queue_login(&user_tx, "target", "secret");
+        let worker = tokio::spawn(
+            UserHandler::new(pool, user_rx).run(Arc::new(Semaphore::new(1))),
+        );
+
+        let result = reply_and_finish(user_tx, worker, reply).await;
+        assert!(matches!(result, LoginResponse::Success(7)));
         Ok(())
     }
 }

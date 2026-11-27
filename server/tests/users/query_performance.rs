@@ -12,12 +12,12 @@ use futures_util::StreamExt;
 use sqlx::{Arguments, PgPool, postgres::PgArguments, types::JsonValue};
 use tokio::{
     net::{TcpListener, TcpStream},
-    sync::{Semaphore, mpsc},
+    sync::{Semaphore, mpsc, oneshot},
     time::timeout,
 };
 use tokio_util::codec::Framed;
 
-use super::{UserHandler, VerifyResult, transaction_pool::transaction_pool};
+use super::{LoginRequest, LoginResponse, UserHandler, VerifyResult, transaction_pool::transaction_pool};
 use crate::database::serial_tests::postgres_test;
 use crate::database::hash::{hash_password, verify_password};
 use crate::users::{registration::handle_register, remove::handle_removeself};
@@ -551,5 +551,54 @@ postgres_test! {
         report_samples("perf-verify-credentials", &mut samples);
         pool.close().await;
         Ok(())
+    }
+}
+
+async fn measure_login_user(
+    pool: PgPool,
+    username: &str,
+    expected_id: Option<u16>,
+    case_id: &str,
+) -> sqlx::Result<()> {
+    seed_accounts(&pool, false).await?;
+    let worker = UserHandler::new(pool, mpsc::channel(1).1);
+    let permit = Arc::new(Semaphore::new(1));
+    let mut samples = Vec::with_capacity(SAMPLE_COUNT);
+    for run in 0..=SAMPLE_COUNT {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let request = LoginRequest::new(username.into(), TIMING_PASSWORD.into(), reply_tx);
+        let permit = Arc::clone(&permit);
+        let (response, elapsed_ms) = timeout(TCP_TIMEOUT, async {
+            let start = Instant::now();
+            worker.login_user(request, permit).await;
+            let response = reply_rx.await.expect("login should send a reply");
+            (response, start.elapsed().as_secs_f64() * 1000.0)
+        })
+        .await
+        .expect("login should finish within the timeout");
+
+        let actual_id = match response {
+            LoginResponse::Success(id) => Some(id),
+            LoginResponse::UserNotFound => None,
+            _ => panic!("expected a successful login or missing user"),
+        };
+        assert_eq!(actual_id, expected_id);
+        if run > 0 {
+            samples.push(elapsed_ms);
+        }
+    }
+    report_samples(case_id, &mut samples);
+    Ok(())
+}
+
+postgres_test! {
+    async fn perf_login_user(pool: PgPool) -> sqlx::Result<()> {
+        measure_login_user(pool, "bench-0001", Some(1), "perf-login-user").await
+    }
+}
+
+postgres_test! {
+    async fn perf_login_user_missing(pool: PgPool) -> sqlx::Result<()> {
+        measure_login_user(pool, "absent", None, "perf-login-user-missing").await
     }
 }

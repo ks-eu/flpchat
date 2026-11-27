@@ -52,6 +52,18 @@
       "title": "try_remove",
       "inputs": "username: &str, password: &str, user_tx: Sender<UserRequest>"
     },
+    "login-user": {
+      "title": "UserHandler::login_user",
+      "inputs": "&self, request: LoginRequest, permit: Arc<Semaphore>"
+    },
+    "try-verify": {
+      "title": "try_verify",
+      "inputs": "username: &str, password: &str, user_tx: Sender<UserRequest>"
+    },
+    "send-serverlogin": {
+      "title": "send_serverlogin",
+      "inputs": "code: u8, sink: FlpcSink"
+    },
     "handle-removeself": {
       "title": "handle_removeself",
       "inputs": "request: RemoveSelf, user_tx: Sender<UserRequest>, sink: FlpcSink, max_len_username: usize, max_len_password: usize"
@@ -1041,6 +1053,118 @@
       "alias": "Attempts deletion of a missing ID (PostgreSQL Execution Time)",
       "input": "remove_user.sql for unassigned ID 1001 with full history",
       "expected": "No deleted row. The account, profile, and all messages remain."
+    },
+    "database::users::user_handler_tests::worker_login_success": {
+      "id": "worker-login-success",
+      "component": "login-user",
+      "suite": "regular",
+      "alias": "Returns the exact user ID",
+      "input": "User 65535 with UTF-8 username and password",
+      "expected": "Success(65535). Account, profile, and available IDs are unchanged."
+    },
+    "database::users::user_handler_tests::worker_login_rejects_credentials": {
+      "id": "worker-login-rejects-credentials",
+      "component": "login-user",
+      "suite": "regular",
+      "alias": "Rejects near-match credentials",
+      "input": "Canonically equivalent Unicode password and differently cased username",
+      "expected": "WrongCredentials for the password and UserNotFound for the username."
+    },
+    "database::users::user_handler_tests::worker_login_bad_hash": {
+      "id": "worker-login-bad-hash",
+      "component": "login-user",
+      "suite": "regular",
+      "alias": "Reports a malformed stored hash",
+      "input": "Existing account with an invalid PHC string",
+      "expected": "HandlerError."
+    },
+    "database::users::user_handler_tests::worker_login_closed_semaphore": {
+      "id": "worker-login-closed-semaphore",
+      "component": "login-user",
+      "suite": "regular",
+      "alias": "Reports an unavailable verification permit",
+      "input": "Existing and missing usernames with the semaphore closed",
+      "expected": "HandlerError for the existing user and UserNotFound for the missing user."
+    },
+    "database::users::user_handler_tests::worker_login_closed_pool": {
+      "id": "worker-login-closed-pool",
+      "component": "login-user",
+      "suite": "regular",
+      "alias": "Reports a failed database lookup",
+      "input": "Login with the PostgreSQL pool closed",
+      "expected": "HandlerError."
+    },
+    "database::users::user_handler_tests::worker_login_dropped_reply": {
+      "id": "worker-login-dropped-reply",
+      "component": "user-handler-run",
+      "suite": "regular",
+      "alias": "Continues after a dropped login reply",
+      "input": "Two queued valid logins with the first reply receiver dropped",
+      "expected": "The second request receives Success(7)."
+    },
+    "users::login::tests::try_verify_forwards_credentials_and_responses": {
+      "id": "try-verify-forward",
+      "component": "try-verify",
+      "suite": "regular",
+      "alias": "Forwards login credentials and replies",
+      "input": "UTF-8 credentials and each LoginResponse variant",
+      "expected": "Exact credentials and the corresponding reply, including ID 65535 on success."
+    },
+    "users::login::tests::try_verify_handles_closed_request_channel": {
+      "id": "try-verify-closed-channel",
+      "component": "try-verify",
+      "suite": "regular",
+      "alias": "Handles a closed login request channel",
+      "input": "Drop the request receiver first",
+      "expected": "HandlerError."
+    },
+    "users::login::tests::try_verify_handles_dropped_reply": {
+      "id": "try-verify-dropped-reply",
+      "component": "try-verify",
+      "suite": "regular",
+      "alias": "Handles a dropped login reply",
+      "input": "Receive the login request and drop it before replying",
+      "expected": "HandlerError."
+    },
+    "users::login::tests::try_verify_waits_for_request_capacity": {
+      "id": "try-verify-capacity",
+      "component": "try-verify",
+      "suite": "regular",
+      "alias": "Waits for login queue capacity",
+      "input": "Fill the request queue and then drain it",
+      "expected": "The pending login is sent and receives Success(7)."
+    },
+    "users::login::tests::send_serverlogin_sends_one_frame_with_given_code": {
+      "id": "serverlogin-frame",
+      "component": "send-serverlogin",
+      "suite": "regular",
+      "alias": "Sends one login response frame",
+      "input": "Loopback TCP connection and outcome code 0x5a",
+      "expected": "The peer decodes one ServerLogin frame with code 0x5a."
+    },
+    "users::login::tests::send_serverlogin_returns_write_error": {
+      "id": "serverlogin-write-error",
+      "component": "send-serverlogin",
+      "suite": "regular",
+      "alias": "Reports a login response write error",
+      "input": "Shut down the server write side before sending",
+      "expected": "CodecError::Io."
+    },
+    "database::users::query_performance_tests::perf_login_user": {
+      "id": "perf-login-user",
+      "component": "login-user",
+      "suite": "performance",
+      "alias": "Measures login handler call to reply",
+      "input": "Valid credentials and a one-permit semaphore",
+      "expected": "Success(1) for the warm-up and all 20 timed samples."
+    },
+    "database::users::query_performance_tests::perf_login_user_missing": {
+      "id": "perf-login-user-missing",
+      "component": "login-user",
+      "suite": "performance",
+      "alias": "Measures missing-user login call to reply",
+      "input": "A username absent from the PostgreSQL fixture",
+      "expected": "UserNotFound for the warm-up and all 20 timed samples."
     },
     "database::users::query_performance_tests::perf_verify_credentials": {
       "id": "perf-verify-credentials",
