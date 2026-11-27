@@ -30,15 +30,14 @@ enum VerifyError {
 pub struct UserHandler {
     pool: PgPool,
     rx: mpsc::Receiver<UserRequest>,
-    permit: Arc<Semaphore>
 }
 
 impl UserHandler {
-    pub fn new(pool: PgPool, rx: mpsc::Receiver<UserRequest>, permit: Arc<Semaphore>) -> Self {
-        Self { pool, rx, permit }
+    pub fn new(pool: PgPool, rx: mpsc::Receiver<UserRequest>) -> Self {
+        Self { pool, rx }
     }
 
-    pub async fn run(mut self) {
+    pub async fn run(mut self, permit: Arc<Semaphore>) {
         while let Some(request) = self.rx.recv().await {
             match request {
                 UserRequest::RegRequest(request) => {
@@ -51,6 +50,7 @@ impl UserHandler {
                     let hashed = match self.verify_credentials(
                         request.username(),
                         request.password(),
+                        Arc::clone(&permit),
                     ).await {
                         Ok(VerifyResult::Success(hashed)) => hashed,
                         Ok(VerifyResult::WrongCredentials) => {
@@ -125,6 +125,7 @@ impl UserHandler {
         &self,
         username: &str,
         password: &str,
+        permit: Arc<Semaphore>,
     ) -> Result<VerifyResult, VerifyError> {
         let hashed_password = match self.get_hashed_password(username).await {
             Ok(Some(hash)) => hash,
@@ -136,7 +137,7 @@ impl UserHandler {
             }
         };
 
-        let permit = match self.permit.clone().acquire_owned().await {
+        let permit = match permit.acquire_owned().await {
             Ok(permit) => permit,
             Err(_) => {
                 return Err(VerifyError::PermitError)

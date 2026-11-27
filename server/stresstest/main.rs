@@ -185,7 +185,7 @@ async fn read_timed(peer: &mut Framed<TcpStream, FlpcCodec>, start: Instant) -> 
 async fn run_tcp_insert(pool: &PgPool) -> Result<(), Box<dyn Error>> {
     let (user_tx, user_rx) = mpsc::channel(1);
     let permit = Arc::new(Semaphore::new(1));
-    let worker = tokio::spawn(UserHandler::new(pool.clone(), user_rx, Arc::clone(&permit)).run());
+    let worker = tokio::spawn(UserHandler::new(pool.clone(), user_rx).run(Arc::clone(&permit)));
     let mut samples = Vec::with_capacity(SAMPLE_COUNT);
     for run in 0..=SAMPLE_COUNT {
         let (server, mut peer) = loopback().await;
@@ -250,7 +250,7 @@ async fn run_sql_remove(pool: &PgPool) -> sqlx::Result<()> {
 async fn run_tcp_remove(pool: &PgPool) -> Result<(), Box<dyn Error>> {
     let (user_tx, user_rx) = mpsc::channel(1);
     let worker =
-        tokio::spawn(UserHandler::new(pool.clone(), user_rx, Arc::new(Semaphore::new(1))).run());
+        tokio::spawn(UserHandler::new(pool.clone(), user_rx).run(Arc::new(Semaphore::new(1))));
     let mut samples = Vec::with_capacity(SAMPLE_COUNT);
     for run in 0..=SAMPLE_COUNT {
         let (server, mut peer) = loopback().await;
