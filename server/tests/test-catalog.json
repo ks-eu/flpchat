@@ -27,6 +27,10 @@
     "removeself-user": {
       "title": "UserHandler::removeself_user",
       "inputs": "&self, username: &str, hashed_password: &str"
+    },
+    "verify-credentials": {
+      "title": "UserHandler::verify_credentials",
+      "inputs": "&self, username: &str, password: &str"
     }
   },
   "cases": {
@@ -397,6 +401,86 @@
       "alias": "Preserves dependents when deletion is blocked",
       "input": "R plus all messages; a non-cascading foreign key references account 7; remove (\"target\", \"target-hash\").",
       "expected": "HandlerError. All accounts, profiles, messages, and IDs survive."
+    },
+    "database::users::removeself_user_tests::verify_match": {
+      "id": "verify-match",
+      "component": "verify-credentials",
+      "suite": "regular",
+      "alias": "Returns the stored hash on exact match",
+      "input": "V, (\"account\", \"café🔑\")",
+      "expected": "Success(original_encoded_hash) byte-for-byte; one permit remains available."
+    },
+    "database::users::removeself_user_tests::verify_wrong": {
+      "id": "verify-wrong",
+      "component": "verify-credentials",
+      "suite": "regular",
+      "alias": "Rejects different plaintext",
+      "input": "V, (\"account\", \"wrong\")",
+      "expected": "WrongCredentials; one permit remains available."
+    },
+    "database::users::removeself_user_tests::verify_unicode": {
+      "id": "verify-unicode",
+      "component": "verify-credentials",
+      "suite": "regular",
+      "alias": "Compares exact password bytes",
+      "input": "V, (\"account\", \"cafe\\u{301}🔑\") using a combining accent",
+      "expected": "WrongCredentials; one permit remains available."
+    },
+    "database::users::removeself_user_tests::verify_hash_as_password": {
+      "id": "verify-hash-as-password",
+      "component": "verify-credentials",
+      "suite": "regular",
+      "alias": "Rejects the encoded hash as plaintext",
+      "input": "V, (\"account\", original_encoded_hash)",
+      "expected": "WrongCredentials; one permit remains available."
+    },
+    "database::users::removeself_user_tests::verify_missing": {
+      "id": "verify-missing",
+      "component": "verify-credentials",
+      "suite": "regular",
+      "alias": "Reports a missing username before permit acquisition",
+      "input": "V with a closed semaphore, (\"absent\", \"café🔑\")",
+      "expected": "UsernameNotFound; the semaphore remains closed and unacquired."
+    },
+    "database::users::removeself_user_tests::verify_malformed": {
+      "id": "verify-malformed",
+      "component": "verify-credentials",
+      "suite": "regular",
+      "alias": "Reports malformed stored hash",
+      "input": "account(7, \"account\", \"invalid-phc\"), (\"account\", \"café🔑\")",
+      "expected": "Err(VerifyError::Argon2Error); one permit remains available."
+    },
+    "database::users::removeself_user_tests::verify_unsupported": {
+      "id": "verify-unsupported",
+      "component": "verify-credentials",
+      "suite": "regular",
+      "alias": "Reports unsupported stored algorithm",
+      "input": "V with \"$argon2id$\" replaced by \"$scrypt$\", (\"account\", \"café🔑\")",
+      "expected": "Err(VerifyError::Argon2Error); one permit remains available."
+    },
+    "database::users::removeself_user_tests::verify_wait": {
+      "id": "verify-wait",
+      "component": "verify-credentials",
+      "suite": "regular",
+      "alias": "Waits for a permit",
+      "input": "Hold V's only permit, poll (\"account\", \"café🔑\") to permit acquisition, then release the held permit.",
+      "expected": "Pending while held. After release, Success(original_encoded_hash) and one permit available."
+    },
+    "database::users::removeself_user_tests::verify_closed": {
+      "id": "verify-closed",
+      "component": "verify-credentials",
+      "suite": "regular",
+      "alias": "Reports a closed semaphore",
+      "input": "V with semaphore closed, (\"account\", \"café🔑\")",
+      "expected": "Err(VerifyError::PermitError)."
+    },
+    "database::users::removeself_user_tests::verify_db_error": {
+      "id": "verify-db-error",
+      "component": "verify-credentials",
+      "suite": "regular",
+      "alias": "Reports lookup failure",
+      "input": "Close V's pool, then call (\"account\", \"café🔑\")",
+      "expected": "Err(VerifyError::SqlxError)."
     }
   }
 }

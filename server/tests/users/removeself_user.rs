@@ -1,8 +1,12 @@
-use std::sync::Arc;
+use std::{pin::pin, sync::Arc, time::Duration};
 
 use argon2::{Argon2, PasswordHasher};
+use futures_util::poll;
 use sqlx::types::JsonValue;
-use tokio::sync::{Semaphore, mpsc};
+use tokio::{
+    sync::{Semaphore, mpsc},
+    time::timeout,
+};
 
 use crate::database::serial_tests::postgres_test;
 
@@ -10,6 +14,7 @@ use super::transaction_pool::{delete_completed, track_completed_deletes, transac
 use super::{PgPool, RegResponse, RemoveSelfResponse, UserHandler, VerifyError, VerifyResult};
 
 const FIXTURE_HASH: &str = "fixture-hash";
+const VERIFY_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, PartialEq)]
 struct DatabaseSnapshot {
@@ -85,6 +90,23 @@ async fn register_user(handler: &UserHandler, username: &str, hashed_password: &
     user_id
 }
 
+async fn seed_verify_account(pool: &PgPool, hash: &str) -> sqlx::Result<()> {
+    sqlx::query("DELETE FROM available_user_ids WHERE user_id = 7")
+        .execute(pool)
+        .await?;
+    sqlx::query(
+        "INSERT INTO users (user_id, username, password_hash)
+         OVERRIDING SYSTEM VALUE VALUES (7, 'account', $1)",
+    )
+    .bind(hash)
+    .execute(pool)
+    .await?;
+    sqlx::query("INSERT INTO user_information (user_id, username) VALUES (7, 'account')")
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 postgres_test! {
     async fn get_hashed_password_matches_exact_username(pool: PgPool) -> sqlx::Result<()> {
         let pool = transaction_pool(&pool).await?;
@@ -107,32 +129,230 @@ postgres_test! {
     }
 }
 
+// Alias: Returns the stored hash on exact match
+// Input: V, ("account", "café🔑")
+// Expected: Success(original_encoded_hash) byte-for-byte; one permit remains available.
 postgres_test! {
-    async fn verify_credentials_requires_exact_password_bytes(pool: PgPool) -> sqlx::Result<()> {
+    async fn verify_match(pool: PgPool) -> sqlx::Result<()> {
         let pool = transaction_pool(&pool).await?;
         let permit = Arc::new(Semaphore::new(1));
+        let hash = Argon2::default().hash_password("café🔑".as_bytes()).unwrap().to_string();
+        seed_verify_account(&pool, &hash).await?;
         let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1, Arc::clone(&permit));
-        let password = "café🔑";
-        let hash = Argon2::default().hash_password(password.as_bytes()).unwrap().to_string();
-        register_user(&handler, "account", &hash).await;
 
         assert!(matches!(
-            handler.verify_credentials("account", password).await,
+            handler.verify_credentials("account", "café🔑").await,
             Ok(VerifyResult::Success(stored_hash)) if stored_hash == hash
         ));
         assert_eq!(permit.available_permits(), 1);
+
+        sqlx::query("ROLLBACK").execute(&pool).await?;
+        Ok(())
+    }
+}
+
+// Alias: Rejects different plaintext
+// Input: V, ("account", "wrong")
+// Expected: WrongCredentials; one permit remains available.
+postgres_test! {
+    async fn verify_wrong(pool: PgPool) -> sqlx::Result<()> {
+        let pool = transaction_pool(&pool).await?;
+        let permit = Arc::new(Semaphore::new(1));
+        let hash = Argon2::default().hash_password("café🔑".as_bytes()).unwrap().to_string();
+        seed_verify_account(&pool, &hash).await?;
+        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1, Arc::clone(&permit));
+
+        assert!(matches!(
+            handler.verify_credentials("account", "wrong").await,
+            Ok(VerifyResult::WrongCredentials)
+        ));
+        assert_eq!(permit.available_permits(), 1);
+
+        sqlx::query("ROLLBACK").execute(&pool).await?;
+        Ok(())
+    }
+}
+
+// Alias: Compares exact password bytes
+// Input: V, ("account", "cafe\u{301}🔑") using a combining accent
+// Expected: WrongCredentials; one permit remains available.
+postgres_test! {
+    async fn verify_unicode(pool: PgPool) -> sqlx::Result<()> {
+        let pool = transaction_pool(&pool).await?;
+        let permit = Arc::new(Semaphore::new(1));
+        let hash = Argon2::default().hash_password("café🔑".as_bytes()).unwrap().to_string();
+        seed_verify_account(&pool, &hash).await?;
+        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1, Arc::clone(&permit));
+
         assert!(matches!(
             handler.verify_credentials("account", "cafe\u{301}🔑").await,
             Ok(VerifyResult::WrongCredentials)
         ));
         assert_eq!(permit.available_permits(), 1);
+
+        sqlx::query("ROLLBACK").execute(&pool).await?;
+        Ok(())
+    }
+}
+
+// Alias: Rejects the encoded hash as plaintext
+// Input: V, ("account", original_encoded_hash)
+// Expected: WrongCredentials; one permit remains available.
+postgres_test! {
+    async fn verify_hash_as_password(pool: PgPool) -> sqlx::Result<()> {
+        let pool = transaction_pool(&pool).await?;
+        let permit = Arc::new(Semaphore::new(1));
+        let hash = Argon2::default().hash_password("café🔑".as_bytes()).unwrap().to_string();
+        seed_verify_account(&pool, &hash).await?;
+        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1, Arc::clone(&permit));
+
         assert!(matches!(
             handler.verify_credentials("account", &hash).await,
             Ok(VerifyResult::WrongCredentials)
         ));
+        assert_eq!(permit.available_permits(), 1);
+
+        sqlx::query("ROLLBACK").execute(&pool).await?;
+        Ok(())
+    }
+}
+
+// Alias: Reports a missing username before permit acquisition
+// Input: V with a closed semaphore, ("absent", "café🔑")
+// Expected: UsernameNotFound; the semaphore remains closed and unacquired.
+postgres_test! {
+    async fn verify_missing(pool: PgPool) -> sqlx::Result<()> {
+        let pool = transaction_pool(&pool).await?;
+        let permit = Arc::new(Semaphore::new(1));
+        permit.close();
+        let hash = Argon2::default().hash_password("café🔑".as_bytes()).unwrap().to_string();
+        seed_verify_account(&pool, &hash).await?;
+        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1, Arc::clone(&permit));
+
         assert!(matches!(
-            handler.verify_credentials("absent", password).await,
+            handler.verify_credentials("absent", "café🔑").await,
             Ok(VerifyResult::UsernameNotFound)
+        ));
+        assert!(permit.is_closed());
+        assert_eq!(permit.available_permits(), 1);
+
+        sqlx::query("ROLLBACK").execute(&pool).await?;
+        Ok(())
+    }
+}
+
+// Alias: Reports malformed stored hash
+// Input: account(7, "account", "invalid-phc"), ("account", "café🔑")
+// Expected: Err(VerifyError::Argon2Error); one permit remains available.
+postgres_test! {
+    async fn verify_malformed(pool: PgPool) -> sqlx::Result<()> {
+        let pool = transaction_pool(&pool).await?;
+        let permit = Arc::new(Semaphore::new(1));
+        seed_verify_account(&pool, "invalid-phc").await?;
+        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1, Arc::clone(&permit));
+
+        assert!(matches!(
+            handler.verify_credentials("account", "café🔑").await,
+            Err(VerifyError::Argon2Error)
+        ));
+        assert_eq!(permit.available_permits(), 1);
+
+        sqlx::query("ROLLBACK").execute(&pool).await?;
+        Ok(())
+    }
+}
+
+// Alias: Reports unsupported stored algorithm
+// Input: V with "$argon2id$" replaced by "$scrypt$", ("account", "café🔑")
+// Expected: Err(VerifyError::Argon2Error); one permit remains available.
+postgres_test! {
+    async fn verify_unsupported(pool: PgPool) -> sqlx::Result<()> {
+        let pool = transaction_pool(&pool).await?;
+        let permit = Arc::new(Semaphore::new(1));
+        let hash = Argon2::default()
+            .hash_password("café🔑".as_bytes())
+            .unwrap()
+            .to_string()
+            .replace("$argon2id$", "$scrypt$");
+        seed_verify_account(&pool, &hash).await?;
+        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1, Arc::clone(&permit));
+
+        assert!(matches!(
+            handler.verify_credentials("account", "café🔑").await,
+            Err(VerifyError::Argon2Error)
+        ));
+        assert_eq!(permit.available_permits(), 1);
+
+        sqlx::query("ROLLBACK").execute(&pool).await?;
+        Ok(())
+    }
+}
+
+// Alias: Waits for a permit
+// Input: Hold V's only permit, poll ("account", "café🔑") to permit acquisition, then release the held permit.
+// Expected: Pending while held. After release, Success(original_encoded_hash) and one permit available.
+postgres_test! {
+    async fn verify_wait(pool: PgPool) -> sqlx::Result<()> {
+        let pool = transaction_pool(&pool).await?;
+        let permit = Arc::new(Semaphore::new(1));
+        let hash = Argon2::default().hash_password("café🔑".as_bytes()).unwrap().to_string();
+        seed_verify_account(&pool, &hash).await?;
+        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1, Arc::clone(&permit));
+        let held_permit = permit.clone().acquire_owned().await.unwrap();
+        let held_connection = pool.acquire().await?;
+
+        let mut verification = pin!(handler.verify_credentials("account", "café🔑"));
+        assert!(poll!(verification.as_mut()).is_pending());
+        let mut probe = pin!(pool.acquire());
+        assert!(poll!(probe.as_mut()).is_pending());
+        drop(held_connection);
+
+        let probe_connection = timeout(VERIFY_TIMEOUT, async {
+            tokio::select! {
+                biased;
+                _ = verification.as_mut() => panic!("verification finished while the permit was held"),
+                connection = probe.as_mut() => connection.expect("pool probe should acquire the released connection"),
+            }
+        })
+        .await
+        .expect("verification should release the connection and wait for its permit");
+        assert!(poll!(verification.as_mut()).is_pending());
+        {
+            let mut second_waiter = pin!(permit.acquire());
+            assert!(poll!(second_waiter.as_mut()).is_pending());
+            drop(held_permit);
+            assert!(poll!(second_waiter.as_mut()).is_pending());
+        }
+        drop(probe_connection);
+
+        assert!(matches!(
+            timeout(VERIFY_TIMEOUT, verification.as_mut())
+                .await
+                .expect("verification should finish after permit release"),
+            Ok(VerifyResult::Success(stored_hash)) if stored_hash == hash
+        ));
+        assert_eq!(permit.available_permits(), 1);
+
+        sqlx::query("ROLLBACK").execute(&pool).await?;
+        Ok(())
+    }
+}
+
+// Alias: Reports a closed semaphore
+// Input: V with semaphore closed, ("account", "café🔑")
+// Expected: Err(VerifyError::PermitError).
+postgres_test! {
+    async fn verify_closed(pool: PgPool) -> sqlx::Result<()> {
+        let pool = transaction_pool(&pool).await?;
+        let permit = Arc::new(Semaphore::new(1));
+        let hash = Argon2::default().hash_password("café🔑".as_bytes()).unwrap().to_string();
+        seed_verify_account(&pool, &hash).await?;
+        permit.close();
+        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1, Arc::clone(&permit));
+
+        assert!(matches!(
+            handler.verify_credentials("account", "café🔑").await,
+            Err(VerifyError::PermitError)
         ));
 
         sqlx::query("ROLLBACK").execute(&pool).await?;
@@ -140,49 +360,19 @@ postgres_test! {
     }
 }
 
+// Alias: Reports lookup failure
+// Input: Close V's pool, then call ("account", "café🔑")
+// Expected: Err(VerifyError::SqlxError).
 postgres_test! {
-    async fn verify_credentials_distinguishes_hash_permit_and_lookup_errors(
-        pool: PgPool,
-    ) -> sqlx::Result<()> {
+    async fn verify_db_error(pool: PgPool) -> sqlx::Result<()> {
         let pool = transaction_pool(&pool).await?;
-        let permit = Arc::new(Semaphore::new(1));
-        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1, Arc::clone(&permit));
-        let password = "password";
-        let hash = Argon2::default().hash_password(password.as_bytes()).unwrap().to_string();
-        let unsupported_hash = hash.replacen("$argon2id$", "$scrypt$", 1);
-        register_user(&handler, "malformed", FIXTURE_HASH).await;
-        register_user(&handler, "unsupported", &unsupported_hash).await;
-        register_user(&handler, "account", &hash).await;
-
-        for username in ["malformed", "unsupported"] {
-            assert!(
-                matches!(
-                    handler.verify_credentials(username, password).await,
-                    Err(VerifyError::Argon2Error)
-                ),
-                "expected an Argon2 error for {username}"
-            );
-            assert_eq!(permit.available_permits(), 1);
-        }
-
-        permit.close();
-        assert!(matches!(
-            handler.verify_credentials("account", password).await,
-            Err(VerifyError::PermitError)
-        ));
-        assert!(matches!(
-            handler.verify_credentials("absent", password).await,
-            Ok(VerifyResult::UsernameNotFound)
-        ));
-
-        sqlx::query("ROLLBACK").execute(&pool).await?;
+        let hash = Argon2::default().hash_password("café🔑".as_bytes()).unwrap().to_string();
+        seed_verify_account(&pool, &hash).await?;
+        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1, Arc::new(Semaphore::new(1)));
         pool.close().await;
+
         assert!(matches!(
-            handler.get_hashed_password("account").await,
-            Err(sqlx::Error::PoolClosed)
-        ));
-        assert!(matches!(
-            handler.verify_credentials("account", password).await,
+            handler.verify_credentials("account", "café🔑").await,
             Err(VerifyError::SqlxError)
         ));
         Ok(())
