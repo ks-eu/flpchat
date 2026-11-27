@@ -43,6 +43,10 @@
     "check-token": {
       "title": "check_token",
       "inputs": "request: &Register, server_token: &str"
+    },
+    "try-insert": {
+      "title": "try_insert",
+      "inputs": "username: &str, hashed_password: &str, user_tx: Sender<UserRequest>"
     }
   },
   "cases": {
@@ -733,6 +737,62 @@
       "alias": "Rejects a new call on a closed semaphore",
       "input": "Close the semaphore, then call hash_password(\"ordinary-password\", …)",
       "expected": "AcquireError."
+    },
+    "users::registration::try_insert_tests::try_insert_forward": {
+      "id": "try-insert-forward",
+      "component": "try-insert",
+      "suite": "regular",
+      "alias": "Forwards the exact request",
+      "input": "Receive the helper's message and respond with Success(65535)",
+      "expected": "Exactly one request of the correct variant, with both strings unchanged. Caller gets Success(65535)."
+    },
+    "users::registration::try_insert_tests::try_insert_no_receiver": {
+      "id": "try-insert-no-receiver",
+      "component": "try-insert",
+      "suite": "regular",
+      "alias": "Handles a closed request channel",
+      "input": "Drop the mpsc receiver before calling",
+      "expected": "HandlerError."
+    },
+    "users::registration::try_insert_tests::try_insert_no_reply": {
+      "id": "try-insert-no-reply",
+      "component": "try-insert",
+      "suite": "regular",
+      "alias": "Handles a dropped one-shot sender",
+      "input": "Receive and drop the request without replying",
+      "expected": "HandlerError."
+    },
+    "users::registration::try_insert_tests::try_insert_full": {
+      "id": "try-insert-full",
+      "component": "try-insert",
+      "suite": "regular",
+      "alias": "Waits for channel capacity",
+      "input": "Fill the channel with a request for \"occupied\", poll the call, drain the filler, then respond Success(65535) to the tested request",
+      "expected": "Pending while full, then forwards the tested request once and returns Success(65535)."
+    },
+    "users::registration::try_insert_tests::try_insert_username_exists": {
+      "id": "try-insert-username-exists",
+      "component": "try-insert",
+      "suite": "regular",
+      "alias": "Forwards the duplicate username reply",
+      "input": "RegResponse::UsernameExists",
+      "expected": "RegResponse::UsernameExists."
+    },
+    "users::registration::try_insert_tests::try_insert_no_space": {
+      "id": "try-insert-no-space",
+      "component": "try-insert",
+      "suite": "regular",
+      "alias": "Forwards the capacity reply",
+      "input": "RegResponse::NotEnoughSpace",
+      "expected": "RegResponse::NotEnoughSpace."
+    },
+    "users::registration::try_insert_tests::try_insert_handler_error": {
+      "id": "try-insert-handler-error",
+      "component": "try-insert",
+      "suite": "regular",
+      "alias": "Forwards the registration handler error",
+      "input": "RegResponse::HandlerError",
+      "expected": "RegResponse::HandlerError."
     }
   }
 }
