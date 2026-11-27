@@ -486,7 +486,7 @@
       "id": "verify-match",
       "component": "verify-credentials",
       "suite": "regular",
-      "alias": "Returns the stored hash on exact match",
+      "alias": "Returns the user ID on exact match",
       "input": "V, (\"account\", \"café🔑\")",
       "expected": "Success(7); one permit remains available."
     },

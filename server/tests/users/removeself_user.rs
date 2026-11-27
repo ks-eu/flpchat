@@ -213,7 +213,7 @@ postgres_test! {
     }
 }
 
-// Alias: Returns the stored hash on exact match
+// Alias: Returns the user ID on exact match
 // Input: V, ("account", "café🔑")
 // Expected: Success(7); one permit remains available.
 postgres_test! {
