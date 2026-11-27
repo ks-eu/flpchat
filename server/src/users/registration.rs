@@ -1,9 +1,6 @@
-use std::sync::Arc;
-
 use tokio::sync::{
     oneshot,
     mpsc,
-    Semaphore,
 };
 use tokio::net::TcpStream;
 use tokio_util::codec::Framed;
@@ -18,7 +15,6 @@ use flpc::unit::{
 use flpc::tokio::{CodecError, FlpcCodec};
 
 use crate::database::users::UserRequest;
-use crate::database::hash::hash_password;
 use crate::users::invalid_credential_lengths;
 
 type FlpcSink = SplitSink<Framed<TcpStream, FlpcCodec>, FlpcUnit>;
@@ -32,7 +28,7 @@ pub enum RegResponse {
 
 pub struct RegRequest {
     username: String,
-    hashed_password: String,
+    password: String,
     response_tx: oneshot::Sender<RegResponse>,
 }
 
@@ -40,12 +36,12 @@ pub struct RegRequest {
 impl RegRequest {
     pub fn new(
         username: String,
-        hashed_password: String,
+        password: String,
         response_tx: oneshot::Sender<RegResponse>,
     ) -> Self {
         Self {
             username,
-            hashed_password,
+            password,
             response_tx,
         }
     }
@@ -54,8 +50,8 @@ impl RegRequest {
         &self.username
     }
 
-    pub fn hashed_password(&self) -> &str {
-        &self.hashed_password
+    pub fn password(&self) -> &str {
+        &self.password
     }
     
     pub fn try_send(
@@ -70,7 +66,6 @@ impl RegRequest {
 pub async fn handle_register(
     request: Register,
     user_tx: mpsc::Sender<UserRequest>,
-    hash_permit: Arc<Semaphore>,
     sink: FlpcSink,
     server_token: &str,
     max_len_username: usize,
@@ -93,18 +88,9 @@ pub async fn handle_register(
         return
     }
 
-    let hashed_password = match hash_password(request.password(), hash_permit).await {
-        Ok(hashed_password) => hashed_password,
-        Err(_) => {
-            // Internal Server Error
-            let _ = send_serverregister(5, sink).await;
-            return
-        }
-    };
-
     match try_insert(
         request.username(),
-        &hashed_password,
+        request.password(),
         user_tx,
     ).await {
         RegResponse::Success(_) => {
@@ -137,13 +123,13 @@ fn check_token(
 /// closes early.
 async fn try_insert(
     username: &str,
-    hashed_password: &str,
+    password: &str,
     user_tx: mpsc::Sender<UserRequest>,
 ) -> RegResponse {
     let (response_tx, response_rx) = oneshot::channel();
     let request = RegRequest::new(
         username.to_string(),
-        hashed_password.to_string(),
+        password.to_string(),
         response_tx
     );
     if user_tx.send(UserRequest::RegRequest(request)).await.is_err() {

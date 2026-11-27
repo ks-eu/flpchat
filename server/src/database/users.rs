@@ -6,7 +6,7 @@ use tokio::sync::{mpsc, Semaphore};
 use crate::users::registration::{RegRequest, RegResponse};
 use crate::users::remove::{RemoveSelfRequest, RemoveSelfResponse};
 use crate::users::login::{LoginRequest, LoginResponse};
-use crate::database::hash::verify_password;
+use crate::database::hash::{hash_password, verify_password};
 
 pub enum UserRequest {
     RegRequest(RegRequest),
@@ -41,10 +41,7 @@ impl UserHandler {
         while let Some(request) = self.rx.recv().await {
             match request {
                 UserRequest::RegRequest(request) => {
-                    let response = self
-                        .insert_user(request.username(), request.hashed_password())
-                        .await;
-                    let _ = request.try_send(response);
+                    self.insert_user(request, Arc::clone(&permit)).await;
                 }
                 UserRequest::RemoveSelfRequest(request) => {
                     let hashed = match self.verify_credentials(
@@ -78,29 +75,70 @@ impl UserHandler {
         }
     }
 
-    async fn insert_user(&self, username: &str, hashed_password: &str) -> RegResponse {
-        let registration =
-            sqlx::query_as::<_, (bool, Option<i32>)>(include_str!("queries/insert_user.sql"))
-                .bind(username)
-                .bind(hashed_password)
-                .fetch_one(&self.pool)
-                .await;
+    async fn insert_user(&self, request: RegRequest, permit: Arc<Semaphore>) {
+        let Ok(mut tx) = self.pool.begin_with("BEGIN ISOLATION LEVEL READ COMMITTED").await else {
+            let _ = request.try_send(RegResponse::HandlerError);
+            return;
+        };
 
-        match registration {
-            Ok((true, _)) => RegResponse::UsernameExists,
-            Ok((false, None)) => RegResponse::NotEnoughSpace,
-            Ok((false, Some(user_id))) => {
-                // The users.user_id CHECK constraint enforces 1..=65535.
-                RegResponse::Success(user_id as u16)
-            }
-            Err(sqlx::Error::Database(error))
-                if error.is_unique_violation()
-                    && error.constraint() == Some("users_username_key") =>
+        let username = request.username();
+        let response = async {
+            let claim = sqlx::query_as::<_, (bool, Option<i32>)>(include_str!(
+                "queries/claim_user_id.sql"
+            ))
+            .bind(username)
+            .fetch_one(&mut *tx)
+            .await;
+            let user_id = match claim {
+                Ok((true, _)) => return RegResponse::UsernameExists,
+                Ok((false, None)) => return RegResponse::NotEnoughSpace,
+                Ok((false, Some(user_id))) => user_id,
+                Err(_) => return RegResponse::HandlerError,
+            };
+
+            match sqlx::query_scalar::<_, i32>(include_str!("queries/insert_user.sql"))
+                .bind(user_id)
+                .bind(username)
+                .fetch_one(&mut *tx)
+                .await
             {
-                RegResponse::UsernameExists
+                Ok(_) => {}
+                Err(sqlx::Error::Database(error))
+                    if error.is_unique_violation()
+                        && error.constraint() == Some("users_username_key") =>
+                {
+                    return RegResponse::UsernameExists;
+                }
+                Err(_) => return RegResponse::HandlerError,
             }
-            Err(_) => RegResponse::HandlerError,
+
+            let Ok(hash) = hash_password(request.password(), permit).await else {
+                return RegResponse::HandlerError;
+            };
+
+            match sqlx::query_scalar::<_, i32>(include_str!("queries/set_password_hash.sql"))
+                .bind(user_id)
+                .bind(hash)
+                .fetch_one(&mut *tx)
+                .await
+            {
+                // The users.user_id CHECK constraint enforces 1..=65535.
+                Ok(user_id) => RegResponse::Success(user_id as u16),
+                Err(_) => RegResponse::HandlerError,
+            }
         }
+        .await;
+
+        let finished = if matches!(&response, RegResponse::Success(_)) {
+            tx.commit().await
+        } else {
+            tx.rollback().await
+        };
+        let _ = request.try_send(if finished.is_ok() {
+            response
+        } else {
+            RegResponse::HandlerError
+        });
     }
 
     async fn removeself_user(&self, username: &str, hashed_password: &str) -> RemoveSelfResponse {

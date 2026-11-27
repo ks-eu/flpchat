@@ -34,11 +34,21 @@ const SAMPLE_COUNT: usize = 20;
 const PASSWORD: &str = "timing-password";
 const TOKEN: &str = "token";
 const FIXTURE_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$bGlnaHRjaGF0LWJlbmNobWFyaw$NG0zwI7kM/Cq+dLLB3HMbPwk1I8NW1iSDPpYPr/ImjU";
+const CLAIM_SQL: &str = include_str!("../src/database/queries/claim_user_id.sql");
 const INSERT_SQL: &str = include_str!("../src/database/queries/insert_user.sql");
+const SET_HASH_SQL: &str = include_str!("../src/database/queries/set_password_hash.sql");
 const REMOVE_SQL: &str = include_str!("../src/database/queries/removeself_user.sql");
+const EXPLAIN_CLAIM: &str = concat!(
+    "EXPLAIN (ANALYZE, TIMING OFF, FORMAT JSON) ",
+    include_str!("../src/database/queries/claim_user_id.sql")
+);
 const EXPLAIN_INSERT: &str = concat!(
     "EXPLAIN (ANALYZE, TIMING OFF, FORMAT JSON) ",
     include_str!("../src/database/queries/insert_user.sql")
+);
+const EXPLAIN_SET_HASH: &str = concat!(
+    "EXPLAIN (ANALYZE, TIMING OFF, FORMAT JSON) ",
+    include_str!("../src/database/queries/set_password_hash.sql")
 );
 const EXPLAIN_REMOVE: &str = concat!(
     "EXPLAIN (ANALYZE, TIMING OFF, FORMAT JSON) ",
@@ -66,7 +76,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     sqlx::query("BEGIN").execute(&pool).await?;
 
     run_sql_insert(&pool).await?;
+    sqlx::query("ROLLBACK").execute(&pool).await?;
     run_tcp_insert(&pool).await?;
+    sqlx::query("BEGIN").execute(&pool).await?;
     run_sql_remove(&pool).await?;
     run_tcp_remove(&pool).await?;
     pool.close().await;
@@ -138,22 +150,40 @@ async fn removed_state(pool: &PgPool) -> sqlx::Result<bool> {
 
 async fn run_sql_insert(pool: &PgPool) -> sqlx::Result<()> {
     savepoint(pool).await?;
-    let result = sqlx::query_as::<_, (bool, Option<i32>)>(INSERT_SQL)
+    let result = sqlx::query_as::<_, (bool, Option<i32>)>(CLAIM_SQL)
         .bind("bench-new")
-        .bind(FIXTURE_HASH)
         .fetch_one(pool)
         .await?;
     assert_eq!(result, (false, Some(50001)));
+    let inserted: i32 = sqlx::query_scalar(INSERT_SQL)
+        .bind(50001_i32)
+        .bind("bench-new")
+        .fetch_one(pool)
+        .await?;
+    assert_eq!(inserted, 50001);
+    let updated: i32 = sqlx::query_scalar(SET_HASH_SQL)
+        .bind(50001_i32)
+        .bind(FIXTURE_HASH)
+        .fetch_one(pool)
+        .await?;
+    assert_eq!(updated, 50001);
     assert_eq!(insert_state(pool).await?, FIXTURE_HASH);
     rollback_sample(pool).await?;
 
     let mut samples = Vec::with_capacity(SAMPLE_COUNT);
     for run in 0..=SAMPLE_COUNT {
         savepoint(pool).await?;
+        let mut claim_args = PgArguments::default();
+        claim_args.add("bench-new").map_err(sqlx::Error::Encode)?;
+        let claim_ms = plan_ms(pool, EXPLAIN_CLAIM, claim_args).await?;
         let mut args = PgArguments::default();
+        args.add(50001_i32).map_err(sqlx::Error::Encode)?;
         args.add("bench-new").map_err(sqlx::Error::Encode)?;
-        args.add(FIXTURE_HASH).map_err(sqlx::Error::Encode)?;
-        let elapsed_ms = plan_ms(pool, EXPLAIN_INSERT, args).await?;
+        let insert_ms = plan_ms(pool, EXPLAIN_INSERT, args).await?;
+        let mut hash_args = PgArguments::default();
+        hash_args.add(50001_i32).map_err(sqlx::Error::Encode)?;
+        hash_args.add(FIXTURE_HASH).map_err(sqlx::Error::Encode)?;
+        let elapsed_ms = claim_ms + insert_ms + plan_ms(pool, EXPLAIN_SET_HASH, hash_args).await?;
         assert_eq!(insert_state(pool).await?, FIXTURE_HASH);
         rollback_sample(pool).await?;
         if run > 0 {
@@ -184,20 +214,17 @@ async fn read_timed(peer: &mut Framed<TcpStream, FlpcCodec>, start: Instant) -> 
 
 async fn run_tcp_insert(pool: &PgPool) -> Result<(), Box<dyn Error>> {
     let (user_tx, user_rx) = mpsc::channel(1);
-    let permit = Arc::new(Semaphore::new(1));
-    let worker = tokio::spawn(UserHandler::new(pool.clone(), user_rx).run(Arc::clone(&permit)));
+    let worker = tokio::spawn(UserHandler::new(pool.clone(), user_rx).run(Arc::new(Semaphore::new(1))));
     let mut samples = Vec::with_capacity(SAMPLE_COUNT);
     for run in 0..=SAMPLE_COUNT {
         let (server, mut peer) = loopback().await;
         let (sink, _) = server.split();
         let request = Register::new(TOKEN.into(), "bench-new".into(), PASSWORD.into());
         let sender = user_tx.clone();
-        let hash_permit = Arc::clone(&permit);
-        savepoint(pool).await?;
         let ((), (response, elapsed_ms)) = timeout(TCP_TIMEOUT, async {
             let start = Instant::now();
             tokio::join!(
-                handle_register(request, sender, hash_permit, sink, TOKEN, 32, 64),
+                handle_register(request, sender, sink, TOKEN, 32, 64),
                 read_timed(&mut peer, start),
             )
         })
@@ -208,7 +235,12 @@ async fn run_tcp_insert(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         );
         let hash = insert_state(pool).await?;
         assert_eq!(database::hash::verify_password(PASSWORD, &hash), Ok(true));
-        rollback_sample(pool).await?;
+        sqlx::query(
+            "WITH removed AS (DELETE FROM users WHERE user_id = 50001 RETURNING user_id)
+             INSERT INTO available_user_ids (user_id) SELECT user_id FROM removed",
+        )
+        .execute(pool)
+        .await?;
         if run > 0 {
             samples.push(elapsed_ms);
         }
