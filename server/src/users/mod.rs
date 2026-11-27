@@ -1,5 +1,6 @@
 pub(crate) mod registration;
 pub(crate) mod remove;
+pub(crate) mod login;
 
 pub(crate) fn invalid_credential_lengths(
     username: &str,
