@@ -82,7 +82,7 @@
       "input": "Runner-provided DATABASE_URL and its ready PostgreSQL instance",
       "expected": "Ok(pool) and SELECT 1 returns 1. Close the pool."
     },
-    "users::check_length_tests::length_min": {
+    "connection::check_length_tests::length_min": {
       "id": "length-min",
       "component": "credential-lengths",
       "suite": "regular",
@@ -90,7 +90,7 @@
       "input": "username \"a\", password \"b\", limits 4 and 6",
       "expected": "false"
     },
-    "users::check_length_tests::length_exact": {
+    "connection::check_length_tests::length_exact": {
       "id": "length-exact",
       "component": "credential-lengths",
       "suite": "regular",
@@ -98,7 +98,7 @@
       "input": "username \"user\", password \"secret\", limits 4 and 6",
       "expected": "false"
     },
-    "users::check_length_tests::length_empty_user": {
+    "connection::check_length_tests::length_empty_user": {
       "id": "length-empty-user",
       "component": "credential-lengths",
       "suite": "regular",
@@ -106,7 +106,7 @@
       "input": "username \"\", password \"secret\", limits 4 and 6",
       "expected": "true"
     },
-    "users::check_length_tests::length_empty_password": {
+    "connection::check_length_tests::length_empty_password": {
       "id": "length-empty-password",
       "component": "credential-lengths",
       "suite": "regular",
@@ -114,7 +114,7 @@
       "input": "username \"user\", password \"\", limits 4 and 6",
       "expected": "true"
     },
-    "users::check_length_tests::length_both_empty": {
+    "connection::check_length_tests::length_both_empty": {
       "id": "length-both-empty",
       "component": "credential-lengths",
       "suite": "regular",
@@ -122,7 +122,7 @@
       "input": "username \"\", password \"\", limits 4 and 6",
       "expected": "true"
     },
-    "users::check_length_tests::length_long_user": {
+    "connection::check_length_tests::length_long_user": {
       "id": "length-long-user",
       "component": "credential-lengths",
       "suite": "regular",
@@ -130,7 +130,7 @@
       "input": "username \"users\", password \"secret\", limits 4 and 6",
       "expected": "true"
     },
-    "users::check_length_tests::length_long_password": {
+    "connection::check_length_tests::length_long_password": {
       "id": "length-long-password",
       "component": "credential-lengths",
       "suite": "regular",
@@ -138,7 +138,7 @@
       "input": "username \"user\", password \"secrets\", limits 4 and 6",
       "expected": "true"
     },
-    "users::check_length_tests::length_zero_user": {
+    "connection::check_length_tests::length_zero_user": {
       "id": "length-zero-user",
       "component": "credential-lengths",
       "suite": "regular",
@@ -146,7 +146,7 @@
       "input": "username \"a\", password \"b\", limits 0 and 6",
       "expected": "true"
     },
-    "users::check_length_tests::length_zero_password": {
+    "connection::check_length_tests::length_zero_password": {
       "id": "length-zero-password",
       "component": "credential-lengths",
       "suite": "regular",
@@ -154,7 +154,7 @@
       "input": "username \"a\", password \"b\", limits 4 and 0",
       "expected": "true"
     },
-    "users::check_length_tests::length_multi_exact": {
+    "connection::check_length_tests::length_multi_exact": {
       "id": "length-multi-exact",
       "component": "credential-lengths",
       "suite": "regular",
@@ -162,7 +162,7 @@
       "input": "username \"éé\", password \"🔑é\", limits 4 and 6",
       "expected": "false"
     },
-    "users::check_length_tests::length_multi_user": {
+    "connection::check_length_tests::length_multi_user": {
       "id": "length-multi-user",
       "component": "credential-lengths",
       "suite": "regular",
@@ -170,7 +170,7 @@
       "input": "username \"éé\", password \"🔑é\", limits 3 and 6",
       "expected": "true"
     },
-    "users::check_length_tests::length_multi_password": {
+    "connection::check_length_tests::length_multi_password": {
       "id": "length-multi-password",
       "component": "credential-lengths",
       "suite": "regular",
@@ -618,7 +618,7 @@
       "input": "Closed pool, input \"account\"",
       "expected": "Err(sqlx::Error::PoolClosed)."
     },
-    "users::registration::handle_register_tests::register_ok": {
+    "connection::registration::handle_register_tests::register_ok": {
       "id": "register-ok",
       "component": "handle-register",
       "suite": "regular",
@@ -626,7 +626,7 @@
       "input": "(\"token\", \"éé\", \"🔑é\")",
       "expected": "Code 0. Account 7 and profile exist, and its stored hash verifies \"🔑é\"."
     },
-    "users::registration::handle_register_tests::register_token": {
+    "connection::registration::handle_register_tests::register_token": {
       "id": "register-token",
       "component": "handle-register",
       "suite": "regular",
@@ -634,7 +634,7 @@
       "input": "(\"wrong\", \"\", \"\")",
       "expected": "Code 1. Account, profile, and available IDs remain unchanged."
     },
-    "users::registration::handle_register_tests::register_empty_user": {
+    "connection::registration::handle_register_tests::register_empty_user": {
       "id": "register-empty-user",
       "component": "handle-register",
       "suite": "regular",
@@ -642,7 +642,7 @@
       "input": "(\"token\", \"\", \"secret\")",
       "expected": "Code 2. Account, profile, and available IDs remain unchanged."
     },
-    "users::registration::handle_register_tests::register_empty_password": {
+    "connection::registration::handle_register_tests::register_empty_password": {
       "id": "register-empty-password",
       "component": "handle-register",
       "suite": "regular",
@@ -650,7 +650,7 @@
       "input": "(\"token\", \"user\", \"\")",
       "expected": "Code 2. Account, profile, and available IDs remain unchanged."
     },
-    "users::registration::handle_register_tests::register_long_user": {
+    "connection::registration::handle_register_tests::register_long_user": {
       "id": "register-long-user",
       "component": "handle-register",
       "suite": "regular",
@@ -658,7 +658,7 @@
       "input": "(\"token\", \"users\", \"secret\")",
       "expected": "Code 2. Account, profile, and available IDs remain unchanged."
     },
-    "users::registration::handle_register_tests::register_long_password": {
+    "connection::registration::handle_register_tests::register_long_password": {
       "id": "register-long-password",
       "component": "handle-register",
       "suite": "regular",
@@ -666,7 +666,7 @@
       "input": "(\"token\", \"user\", \"secrets\")",
       "expected": "Code 2. Account, profile, and available IDs remain unchanged."
     },
-    "users::registration::handle_register_tests::register_full": {
+    "connection::registration::handle_register_tests::register_full": {
       "id": "register-full",
       "component": "handle-register",
       "suite": "regular",
@@ -674,7 +674,7 @@
       "input": "Existing username, IDs=[], (\"token\", \"user\", \"secret\")",
       "expected": "Code 3. Account, profile, and available IDs remain unchanged."
     },
-    "users::registration::handle_register_tests::register_duplicate": {
+    "connection::registration::handle_register_tests::register_duplicate": {
       "id": "register-duplicate",
       "component": "handle-register",
       "suite": "regular",
@@ -682,7 +682,7 @@
       "input": "account(7, \"user\", \"old-hash\"), (\"token\", \"user\", \"secret\")",
       "expected": "Code 4. Original account/hash and profile remain; available IDs remain unchanged."
     },
-    "users::registration::handle_register_tests::register_hash_error": {
+    "connection::registration::handle_register_tests::register_hash_error": {
       "id": "register-hash-error",
       "component": "handle-register",
       "suite": "regular",
@@ -690,7 +690,7 @@
       "input": "Closed hashing semaphore, (\"token\", \"user\", \"secret\")",
       "expected": "Code 5. Account, profile, and available IDs remain unchanged."
     },
-    "users::registration::handle_register_tests::register_worker_error": {
+    "connection::registration::handle_register_tests::register_worker_error": {
       "id": "register-worker-error",
       "component": "handle-register",
       "suite": "regular",
@@ -698,7 +698,7 @@
       "input": "Closed worker pool, open hashing semaphore, (\"token\", \"user\", \"secret\")",
       "expected": "Code 5. Account, profile, and available IDs remain unchanged."
     },
-    "users::registration::check_token_tests::token_exact": {
+    "connection::registration::check_token_tests::token_exact": {
       "id": "token-exact",
       "component": "check-token",
       "suite": "regular",
@@ -706,7 +706,7 @@
       "input": "request token \"secret\", server token \"secret\"",
       "expected": "false."
     },
-    "users::registration::check_token_tests::token_different": {
+    "connection::registration::check_token_tests::token_different": {
       "id": "token-different",
       "component": "check-token",
       "suite": "regular",
@@ -714,7 +714,7 @@
       "input": "request token \"wrong\", server token \"secret\"",
       "expected": "true."
     },
-    "users::registration::check_token_tests::token_case": {
+    "connection::registration::check_token_tests::token_case": {
       "id": "token-case",
       "component": "check-token",
       "suite": "regular",
@@ -722,7 +722,7 @@
       "input": "request token \"Secret\", server token \"secret\"",
       "expected": "true."
     },
-    "users::registration::check_token_tests::token_space": {
+    "connection::registration::check_token_tests::token_space": {
       "id": "token-space",
       "component": "check-token",
       "suite": "regular",
@@ -730,7 +730,7 @@
       "input": "request token \"secret \", server token \"secret\"",
       "expected": "true."
     },
-    "users::registration::check_token_tests::token_empty_request": {
+    "connection::registration::check_token_tests::token_empty_request": {
       "id": "token-empty-request",
       "component": "check-token",
       "suite": "regular",
@@ -738,7 +738,7 @@
       "input": "request token \"\", server token \"secret\"",
       "expected": "true."
     },
-    "users::registration::check_token_tests::token_empty_server": {
+    "connection::registration::check_token_tests::token_empty_server": {
       "id": "token-empty-server",
       "component": "check-token",
       "suite": "regular",
@@ -746,7 +746,7 @@
       "input": "request token \"secret\", server token \"\"",
       "expected": "true."
     },
-    "users::registration::check_token_tests::token_both_empty": {
+    "connection::registration::check_token_tests::token_both_empty": {
       "id": "token-both-empty",
       "component": "check-token",
       "suite": "regular",
@@ -818,7 +818,7 @@
       "input": "Close the semaphore, then call hash_password(\"ordinary-password\", …)",
       "expected": "AcquireError."
     },
-    "users::registration::try_insert_tests::try_insert_forward": {
+    "connection::registration::try_insert_tests::try_insert_forward": {
       "id": "try-insert-forward",
       "component": "try-insert",
       "suite": "regular",
@@ -826,7 +826,7 @@
       "input": "Receive the helper's message and respond with Success(65535)",
       "expected": "Exactly one request of the correct variant, with both strings unchanged. Caller gets Success(65535)."
     },
-    "users::registration::try_insert_tests::try_insert_no_receiver": {
+    "connection::registration::try_insert_tests::try_insert_no_receiver": {
       "id": "try-insert-no-receiver",
       "component": "try-insert",
       "suite": "regular",
@@ -834,7 +834,7 @@
       "input": "Drop the mpsc receiver before calling",
       "expected": "HandlerError."
     },
-    "users::registration::try_insert_tests::try_insert_no_reply": {
+    "connection::registration::try_insert_tests::try_insert_no_reply": {
       "id": "try-insert-no-reply",
       "component": "try-insert",
       "suite": "regular",
@@ -842,7 +842,7 @@
       "input": "Receive and drop the request without replying",
       "expected": "HandlerError."
     },
-    "users::registration::try_insert_tests::try_insert_full": {
+    "connection::registration::try_insert_tests::try_insert_full": {
       "id": "try-insert-full",
       "component": "try-insert",
       "suite": "regular",
@@ -850,7 +850,7 @@
       "input": "Fill the channel with a request for \"occupied\", poll the call, drain the filler, then respond Success(65535) to the tested request",
       "expected": "Pending while full, then forwards the tested request once and returns Success(65535)."
     },
-    "users::registration::try_insert_tests::try_insert_username_exists": {
+    "connection::registration::try_insert_tests::try_insert_username_exists": {
       "id": "try-insert-username-exists",
       "component": "try-insert",
       "suite": "regular",
@@ -858,7 +858,7 @@
       "input": "RegResponse::UsernameExists",
       "expected": "RegResponse::UsernameExists."
     },
-    "users::registration::try_insert_tests::try_insert_no_space": {
+    "connection::registration::try_insert_tests::try_insert_no_space": {
       "id": "try-insert-no-space",
       "component": "try-insert",
       "suite": "regular",
@@ -866,7 +866,7 @@
       "input": "RegResponse::NotEnoughSpace",
       "expected": "RegResponse::NotEnoughSpace."
     },
-    "users::registration::try_insert_tests::try_insert_handler_error": {
+    "connection::registration::try_insert_tests::try_insert_handler_error": {
       "id": "try-insert-handler-error",
       "component": "try-insert",
       "suite": "regular",
@@ -874,7 +874,7 @@
       "input": "RegResponse::HandlerError",
       "expected": "RegResponse::HandlerError."
     },
-    "users::remove::tests::try_remove_forward": {
+    "connection::remove::tests::try_remove_forward": {
       "id": "try-remove-forward",
       "component": "try-remove",
       "suite": "regular",
@@ -882,7 +882,7 @@
       "input": "Receive the helper's message and respond with Success(65535)",
       "expected": "Exactly one request of the correct variant, with both strings unchanged. Caller gets Success(65535)."
     },
-    "users::remove::tests::try_remove_no_receiver": {
+    "connection::remove::tests::try_remove_no_receiver": {
       "id": "try-remove-no-receiver",
       "component": "try-remove",
       "suite": "regular",
@@ -890,7 +890,7 @@
       "input": "Drop the mpsc receiver before calling",
       "expected": "HandlerError."
     },
-    "users::remove::tests::try_remove_no_reply": {
+    "connection::remove::tests::try_remove_no_reply": {
       "id": "try-remove-no-reply",
       "component": "try-remove",
       "suite": "regular",
@@ -898,7 +898,7 @@
       "input": "Receive and drop the request without replying",
       "expected": "HandlerError."
     },
-    "users::remove::tests::try_remove_full": {
+    "connection::remove::tests::try_remove_full": {
       "id": "try-remove-full",
       "component": "try-remove",
       "suite": "regular",
@@ -906,7 +906,7 @@
       "input": "Fill the channel with a request for \"occupied\", poll the call, drain the filler, then respond Success(65535) to the tested request",
       "expected": "Pending while full, then forwards the tested request once and returns Success(65535)."
     },
-    "users::remove::tests::try_remove_not_found": {
+    "connection::remove::tests::try_remove_not_found": {
       "id": "try-remove-not-found",
       "component": "try-remove",
       "suite": "regular",
@@ -914,7 +914,7 @@
       "input": "RemoveSelfResponse::UserNotFound",
       "expected": "RemoveSelfResponse::UserNotFound"
     },
-    "users::remove::tests::try_remove_wrong_credentials": {
+    "connection::remove::tests::try_remove_wrong_credentials": {
       "id": "try-remove-wrong-credentials",
       "component": "try-remove",
       "suite": "regular",
@@ -922,7 +922,7 @@
       "input": "RemoveSelfResponse::WrongCredentials",
       "expected": "RemoveSelfResponse::WrongCredentials"
     },
-    "users::remove::tests::try_remove_handler_error": {
+    "connection::remove::tests::try_remove_handler_error": {
       "id": "try-remove-handler-error",
       "component": "try-remove",
       "suite": "regular",
@@ -930,7 +930,7 @@
       "input": "RemoveSelfResponse::HandlerError",
       "expected": "RemoveSelfResponse::HandlerError"
     },
-    "users::remove::tests::removeself_ok": {
+    "connection::remove::tests::removeself_ok": {
       "id": "removeself-ok",
       "component": "handle-removeself",
       "suite": "regular",
@@ -938,7 +938,7 @@
       "input": "account(7, \"éé\", H(\"🔑é\")), (\"éé\", \"🔑é\")",
       "expected": "Code 0. Account 7 and its profile are gone; ID 7 remains claimed."
     },
-    "users::remove::tests::removeself_wrong": {
+    "connection::remove::tests::removeself_wrong": {
       "id": "removeself-wrong",
       "component": "handle-removeself",
       "suite": "regular",
@@ -946,7 +946,7 @@
       "input": "account(7, \"user\", H(\"secret\")), (\"user\", \"wrong\")",
       "expected": "Code 1. Account 7 and its profile remain; ID 7 stays claimed."
     },
-    "users::remove::tests::removeself_empty_user": {
+    "connection::remove::tests::removeself_empty_user": {
       "id": "removeself-empty-user",
       "component": "handle-removeself",
       "suite": "regular",
@@ -954,7 +954,7 @@
       "input": "account(7, \"user\", H(\"secret\")), (\"\", \"secret\")",
       "expected": "Code 2. Account 7 and its profile remain; ID 7 stays claimed."
     },
-    "users::remove::tests::removeself_empty_password": {
+    "connection::remove::tests::removeself_empty_password": {
       "id": "removeself-empty-password",
       "component": "handle-removeself",
       "suite": "regular",
@@ -962,7 +962,7 @@
       "input": "account(7, \"user\", H(\"secret\")), (\"user\", \"\")",
       "expected": "Code 2. Account 7 and its profile remain; ID 7 stays claimed."
     },
-    "users::remove::tests::removeself_long_user": {
+    "connection::remove::tests::removeself_long_user": {
       "id": "removeself-long-user",
       "component": "handle-removeself",
       "suite": "regular",
@@ -970,7 +970,7 @@
       "input": "account(7, \"users\", H(\"secret\")), (\"users\", \"secret\")",
       "expected": "Code 2. The matching account and profile remain; ID 7 stays claimed."
     },
-    "users::remove::tests::removeself_long_password": {
+    "connection::remove::tests::removeself_long_password": {
       "id": "removeself-long-password",
       "component": "handle-removeself",
       "suite": "regular",
@@ -978,7 +978,7 @@
       "input": "account(7, \"user\", H(\"secrets\")), (\"user\", \"secrets\")",
       "expected": "Code 2. The matching account and profile remain; ID 7 stays claimed."
     },
-    "users::remove::tests::removeself_missing": {
+    "connection::remove::tests::removeself_missing": {
       "id": "removeself-missing",
       "component": "handle-removeself",
       "suite": "regular",
@@ -986,7 +986,7 @@
       "input": "account(7, \"user\", H(\"secret\")), (\"none\", \"secret\")",
       "expected": "Code 3. Account 7 and its profile remain; ID 7 stays claimed."
     },
-    "users::remove::tests::removeself_worker_error": {
+    "connection::remove::tests::removeself_worker_error": {
       "id": "removeself-worker-error",
       "component": "handle-removeself",
       "suite": "regular",
@@ -1106,7 +1106,7 @@
       "input": "Two queued valid logins with the first reply receiver dropped",
       "expected": "The second request receives Success(7)."
     },
-    "users::login::tests::handle_login_returns_id_and_sink": {
+    "connection::login::tests::handle_login_returns_id_and_sink": {
       "id": "login-returns-id-and-sink",
       "component": "handle-login",
       "suite": "regular",
@@ -1114,7 +1114,7 @@
       "input": "UTF-8 credentials at both byte limits with a real worker and PostgreSQL account 65535",
       "expected": "Returns ID 65535. The peer receives only the frame written by the caller through the returned sink."
     },
-    "users::login::tests::handle_login_invalid_lengths_skip_worker": {
+    "connection::login::tests::handle_login_invalid_lengths_skip_worker": {
       "id": "login-invalid-lengths",
       "component": "handle-login",
       "suite": "regular",
@@ -1122,7 +1122,7 @@
       "input": "Empty and one-byte-over-limit usernames and passwords",
       "expected": "None, no queued login, and code 2."
     },
-    "users::login::tests::handle_login_wrong_credentials": {
+    "connection::login::tests::handle_login_wrong_credentials": {
       "id": "login-wrong-credentials",
       "component": "handle-login",
       "suite": "regular",
@@ -1130,7 +1130,7 @@
       "input": "Worker replies WrongCredentials",
       "expected": "None and code 1."
     },
-    "users::login::tests::handle_login_missing_user": {
+    "connection::login::tests::handle_login_missing_user": {
       "id": "login-missing-user",
       "component": "handle-login",
       "suite": "regular",
@@ -1138,7 +1138,7 @@
       "input": "Worker replies UserNotFound",
       "expected": "None and code 3."
     },
-    "users::login::tests::handle_login_worker_error": {
+    "connection::login::tests::handle_login_worker_error": {
       "id": "login-worker-error",
       "component": "handle-login",
       "suite": "regular",
@@ -1146,7 +1146,7 @@
       "input": "Worker replies HandlerError",
       "expected": "None and code 4."
     },
-    "users::login::tests::handle_login_dropped_reply": {
+    "connection::login::tests::handle_login_dropped_reply": {
       "id": "login-dropped-reply",
       "component": "handle-login",
       "suite": "regular",
@@ -1154,7 +1154,7 @@
       "input": "Drop the queued login without replying",
       "expected": "None and code 4."
     },
-    "users::login::tests::handle_login_closed_worker": {
+    "connection::login::tests::handle_login_closed_worker": {
       "id": "login-closed-worker",
       "component": "handle-login",
       "suite": "regular",
@@ -1162,7 +1162,7 @@
       "input": "Drop the request receiver before login",
       "expected": "None and code 4."
     },
-    "users::login::tests::try_verify_forwards_credentials_and_responses": {
+    "connection::login::tests::try_verify_forwards_credentials_and_responses": {
       "id": "try-verify-forward",
       "component": "try-verify",
       "suite": "regular",
@@ -1170,7 +1170,7 @@
       "input": "UTF-8 credentials and each LoginResponse variant",
       "expected": "Exact credentials and the corresponding reply, including ID 65535 on success."
     },
-    "users::login::tests::try_verify_handles_closed_request_channel": {
+    "connection::login::tests::try_verify_handles_closed_request_channel": {
       "id": "try-verify-closed-channel",
       "component": "try-verify",
       "suite": "regular",
@@ -1178,7 +1178,7 @@
       "input": "Drop the request receiver first",
       "expected": "HandlerError."
     },
-    "users::login::tests::try_verify_handles_dropped_reply": {
+    "connection::login::tests::try_verify_handles_dropped_reply": {
       "id": "try-verify-dropped-reply",
       "component": "try-verify",
       "suite": "regular",
@@ -1186,7 +1186,7 @@
       "input": "Receive the login request and drop it before replying",
       "expected": "HandlerError."
     },
-    "users::login::tests::try_verify_waits_for_request_capacity": {
+    "connection::login::tests::try_verify_waits_for_request_capacity": {
       "id": "try-verify-capacity",
       "component": "try-verify",
       "suite": "regular",
@@ -1194,7 +1194,7 @@
       "input": "Fill the request queue and then drain it",
       "expected": "The pending login is sent and receives Success(7)."
     },
-    "users::login::tests::send_serverlogin_sends_one_frame_with_given_code": {
+    "connection::login::tests::send_serverlogin_sends_one_frame_with_given_code": {
       "id": "serverlogin-frame",
       "component": "send-serverlogin",
       "suite": "regular",
@@ -1202,7 +1202,7 @@
       "input": "Loopback TCP connection and outcome code 0x5a",
       "expected": "The peer decodes one ServerLogin frame with code 0x5a."
     },
-    "users::login::tests::send_serverlogin_returns_write_error": {
+    "connection::login::tests::send_serverlogin_returns_write_error": {
       "id": "serverlogin-write-error",
       "component": "send-serverlogin",
       "suite": "regular",

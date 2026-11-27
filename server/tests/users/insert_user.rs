@@ -6,7 +6,7 @@ use tokio::{
 };
 
 use crate::database::{hash::verify_password, serial_tests::postgres_test};
-use crate::users::registration::RegRequest;
+use crate::connection::registration::RegRequest;
 
 use super::{PgPool, RegResponse, UserHandler, UserRequest};
 
