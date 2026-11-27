@@ -49,7 +49,7 @@ async fn seed_account(pool: &PgPool, id: i32, username: &str, hash: &str) -> sql
 fn start_worker(pool: &PgPool) -> (mpsc::Sender<UserRequest>, JoinHandle<()>) {
     let (user_tx, user_rx) = mpsc::channel(4);
     let worker =
-        tokio::spawn(UserHandler::new(pool.clone(), user_rx, Arc::new(Semaphore::new(1))).run());
+        tokio::spawn(UserHandler::new(pool.clone(), user_rx).run(Arc::new(Semaphore::new(1))));
     (user_tx, worker)
 }
 
@@ -304,7 +304,7 @@ postgres_test! {
         drop(first);
         let second = queue_registration(&user_tx, "second", "second-hash");
         let worker = tokio::spawn(
-            UserHandler::new(pool.clone(), user_rx, Arc::new(Semaphore::new(1))).run(),
+            UserHandler::new(pool.clone(), user_rx).run(Arc::new(Semaphore::new(1))),
         );
         let result = reply_and_finish(user_tx, worker, second).await;
 
@@ -329,9 +329,9 @@ postgres_test! {
         let reply = queue_registration(&user_tx, "queued", "queued-hash");
         drop(user_tx);
 
-        let worker = UserHandler::new(pool.clone(), user_rx, Arc::new(Semaphore::new(1)));
+        let worker = UserHandler::new(pool.clone(), user_rx);
         let result = timeout(TEST_TIMEOUT, async {
-            tokio::join!(worker.run(), reply)
+            tokio::join!(worker.run(Arc::new(Semaphore::new(1))), reply)
         })
         .await
         .expect("worker should drain and exit");

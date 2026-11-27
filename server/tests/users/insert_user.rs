@@ -1,6 +1,4 @@
-use std::sync::Arc;
-
-use tokio::sync::{Semaphore, mpsc};
+use tokio::sync::mpsc;
 
 use crate::database::serial_tests::postgres_test;
 
@@ -38,11 +36,7 @@ async fn seed_account(pool: &PgPool, id: i32, username: &str, hash: &str) -> sql
 }
 
 fn handler(pool: &PgPool) -> UserHandler {
-    UserHandler::new(
-        pool.clone(),
-        mpsc::channel(1).1,
-        Arc::new(Semaphore::new(1)),
-    )
+    UserHandler::new(pool.clone(), mpsc::channel(1).1)
 }
 
 async fn available_ids(pool: &PgPool) -> sqlx::Result<Vec<i32>> {

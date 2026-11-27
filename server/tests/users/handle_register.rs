@@ -91,7 +91,7 @@ async fn registration_outcome(
         let mut peer = Framed::new(peer, FlpcCodec);
         let (user_tx, user_rx) = mpsc::channel(1);
         let worker =
-            tokio::spawn(UserHandler::new(worker_pool, user_rx, Arc::clone(&hash_permit)).run());
+            tokio::spawn(UserHandler::new(worker_pool, user_rx).run(Arc::clone(&hash_permit)));
         let handler = handle_register(
             request,
             user_tx.clone(),

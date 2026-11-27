@@ -401,7 +401,7 @@ postgres_test! {
         seed_accounts(&pool, false).await?;
         let (user_tx, user_rx) = mpsc::channel(1);
         let permit = Arc::new(Semaphore::new(1));
-        let worker = tokio::spawn(UserHandler::new(pool.clone(), user_rx, Arc::clone(&permit)).run());
+        let worker = tokio::spawn(UserHandler::new(pool.clone(), user_rx).run(Arc::clone(&permit)));
         let mut samples = Vec::with_capacity(SAMPLE_COUNT);
         for run in 0..=SAMPLE_COUNT {
             let (server, mut peer) = loopback().await;
@@ -447,7 +447,7 @@ async fn measure_remove_tcp(
     seed_accounts(&pool, with_history).await?;
     let (user_tx, user_rx) = mpsc::channel(1);
     let worker =
-        tokio::spawn(UserHandler::new(pool.clone(), user_rx, Arc::new(Semaphore::new(1))).run());
+        tokio::spawn(UserHandler::new(pool.clone(), user_rx).run(Arc::new(Semaphore::new(1))));
     let mut samples = Vec::with_capacity(SAMPLE_COUNT);
     for run in 0..=SAMPLE_COUNT {
         let (server, mut peer) = loopback().await;
@@ -538,11 +538,12 @@ postgres_test! {
     async fn perf_verify_credentials(pool: PgPool) -> sqlx::Result<()> {
         let pool = transaction_pool(&pool).await?;
         seed_accounts(&pool, false).await?;
-        let worker = UserHandler::new(pool.clone(), mpsc::channel(1).1, Arc::new(Semaphore::new(1)));
+        let worker = UserHandler::new(pool.clone(), mpsc::channel(1).1);
+        let permit = Arc::new(Semaphore::new(1));
         let mut samples = Vec::with_capacity(SAMPLE_COUNT);
         for run in 0..=SAMPLE_COUNT {
             let start = Instant::now();
-            let result = worker.verify_credentials("bench-0001", TIMING_PASSWORD).await;
+            let result = worker.verify_credentials("bench-0001", TIMING_PASSWORD, Arc::clone(&permit)).await;
             let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
             assert!(matches!(result, Ok(VerifyResult::Success(hash)) if hash == BENCHMARK_HASH));
             if run > 0 { samples.push(elapsed_ms); }

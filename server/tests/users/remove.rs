@@ -79,7 +79,7 @@ async fn run_removal(
     timeout(TEST_TIMEOUT, async {
         let (sink, mut peer) = loopback().await;
         let (user_tx, user_rx) = mpsc::channel(1);
-        let worker = tokio::spawn(UserHandler::new(pool, user_rx, permit).run());
+        let worker = tokio::spawn(UserHandler::new(pool, user_rx).run(permit));
         timeout(
             TEST_TIMEOUT,
             handle_removeself(
