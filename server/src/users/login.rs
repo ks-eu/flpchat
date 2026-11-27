@@ -85,4 +85,6 @@ async fn send_serverlogin(
     todo!()
 }
 
-
+#[cfg(test)]
+#[path = "../../tests/users/login.rs"]
+mod tests;
