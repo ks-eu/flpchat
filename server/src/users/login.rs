@@ -67,7 +67,27 @@ pub async fn handle_login(
     max_len_username: usize,
     max_len_password: usize,
 ) {
-    todo!();
+    let code = if invalid_credential_lengths(
+        request.username(),
+        request.password(),
+        max_len_username,
+        max_len_password,
+    ) {
+        2
+    } else {
+        match try_verify(
+            request.username(),
+            request.password(),
+            user_tx,
+        ).await {
+            LoginResponse::Success(_) => 0,
+            LoginResponse::WrongCredentials => 1,
+            LoginResponse::UserNotFound => 3,
+            LoginResponse::HandlerError => 4,
+        }
+    };
+
+    let _ = send_serverlogin(code, sink);
 }
 
 async fn try_verify(
@@ -76,7 +96,11 @@ async fn try_verify(
     user_tx: mpsc::Sender<UserRequest>,
 ) -> LoginResponse {
     let (response_tx, response_rx) = oneshot::channel();
-    let request = LoginRequest::new(username.to_owned(), password.to_owned(), response_tx);
+    let request = LoginRequest::new(
+        username.to_owned(),
+        password.to_owned(),
+        response_tx
+    );
     if user_tx.send(UserRequest::LoginRequest(request)).await.is_err() {
         return LoginResponse::HandlerError;
     }
