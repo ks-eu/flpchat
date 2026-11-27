@@ -167,10 +167,6 @@ async fn send_serverregister(
 mod check_token_tests;
 
 #[cfg(test)]
-#[path = "../../tests/users/hash_password.rs"]
-mod hash_password_tests;
-
-#[cfg(test)]
 #[path = "../../tests/users/try_insert.rs"]
 mod try_insert_tests;
 

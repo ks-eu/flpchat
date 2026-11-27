@@ -669,6 +669,70 @@
       "alias": "Accepts matching empty tokens",
       "input": "request token \"\", server token \"\"",
       "expected": "false."
+    },
+    "hashing::hash_password_tests::hash_ascii": {
+      "id": "hash-ascii",
+      "component": "hash-password",
+      "suite": "regular",
+      "alias": "Hashes an ASCII password",
+      "input": "\"ordinary-password\"",
+      "expected": "Parseable Argon2 hash that verifies the exact password."
+    },
+    "hashing::hash_password_tests::hash_unicode": {
+      "id": "hash-unicode",
+      "component": "hash-password",
+      "suite": "regular",
+      "alias": "Hashes a multibyte password",
+      "input": "\"café🔑\"",
+      "expected": "Parseable Argon2 hash that verifies the exact password."
+    },
+    "hashing::hash_password_tests::hash_empty": {
+      "id": "hash-empty",
+      "component": "hash-password",
+      "suite": "regular",
+      "alias": "Hashes empty plaintext at the helper boundary",
+      "input": "\"\"",
+      "expected": "Parseable Argon2 hash that verifies empty plaintext."
+    },
+    "hashing::hash_password_tests::hash_wrong": {
+      "id": "hash-wrong",
+      "component": "hash-password",
+      "suite": "regular",
+      "alias": "Rejects a different password on verification",
+      "input": "Hash \"ordinary-password\" and verify with \"wrong-password\"",
+      "expected": "Argon2 reports PasswordInvalid."
+    },
+    "hashing::hash_password_tests::hash_salt": {
+      "id": "hash-salt",
+      "component": "hash-password",
+      "suite": "regular",
+      "alias": "Uses a fresh salt",
+      "input": "Hash \"ordinary-password\" twice",
+      "expected": "Both verify and their encoded salts differ."
+    },
+    "hashing::hash_password_tests::hash_wait": {
+      "id": "hash-wait",
+      "component": "hash-password",
+      "suite": "regular",
+      "alias": "Waits for and returns the permit",
+      "input": "Hold the only permit, poll hash_password(\"ordinary-password\", …), then release the permit",
+      "expected": "The future is pending while held, succeeds after release and leaves one available permit."
+    },
+    "hashing::hash_password_tests::hash_close_waiter": {
+      "id": "hash-close-waiter",
+      "component": "hash-password",
+      "suite": "regular",
+      "alias": "Rejects a waiter when the semaphore closes",
+      "input": "Hold the only permit and poll hash_password(\"ordinary-password\", …) before closing the semaphore",
+      "expected": "AcquireError."
+    },
+    "hashing::hash_password_tests::hash_close_new": {
+      "id": "hash-close-new",
+      "component": "hash-password",
+      "suite": "regular",
+      "alias": "Rejects a new call on a closed semaphore",
+      "input": "Close the semaphore, then call hash_password(\"ordinary-password\", …)",
+      "expected": "AcquireError."
     }
   }
 }
