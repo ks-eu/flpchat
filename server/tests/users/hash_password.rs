@@ -7,7 +7,7 @@ use tokio::{
     time::timeout,
 };
 
-use crate::hashing::hash_password;
+use crate::database::hash::hash_password;
 
 // Alias: Hashes an ASCII password
 // Input: "ordinary-password"

@@ -19,7 +19,7 @@ use tokio_util::codec::Framed;
 
 use super::{UserHandler, VerifyResult, transaction_pool::transaction_pool};
 use crate::database::serial_tests::postgres_test;
-use crate::hashing::{hash_password, verify_password};
+use crate::database::hash::{hash_password, verify_password};
 use crate::users::{registration::handle_register, remove::handle_removeself};
 
 const TCP_TIMEOUT: Duration = Duration::from_secs(5);
