@@ -16,14 +16,6 @@ pub(crate) fn verify_password(
     }
 }
 
-#[cfg(test)]
-#[path = "../tests/users/verify_password.rs"]
-mod verify_password_tests;
-
-#[cfg(test)]
-#[path = "../tests/users/hash_password.rs"]
-mod hash_password_tests;
-
 /// Hashes a password while holding a semaphore permit.
 pub(crate) async fn hash_password(
     password: &str,
@@ -40,3 +32,11 @@ pub(crate) async fn hash_password(
 
     Ok(hash.to_string())
 }
+
+#[cfg(test)]
+#[path = "../tests/users/verify_password.rs"]
+mod verify_password_tests;
+
+#[cfg(test)]
+#[path = "../tests/users/hash_password.rs"]
+mod hash_password_tests;
