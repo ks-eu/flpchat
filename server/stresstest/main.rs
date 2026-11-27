@@ -31,6 +31,7 @@ mod users;
 use database::users::UserHandler;
 use users::{registration::handle_register, remove::handle_removeself};
 
+const TCP_TIMEOUT: Duration = Duration::from_secs(30);
 const SAMPLE_COUNT: usize = 20;
 const PASSWORD: &str = "timing-password";
 const TOKEN: &str = "token";
@@ -175,9 +176,7 @@ async fn loopback() -> (Framed<TcpStream, FlpcCodec>, Framed<TcpStream, FlpcCode
 }
 
 async fn read_timed(peer: &mut Framed<TcpStream, FlpcCodec>, start: Instant) -> (FlpcUnit, f64) {
-    let frame = timeout(Duration::from_secs(30), peer.next())
-        .await
-        .expect("handler response should arrive");
+    let frame = peer.next().await;
     let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
     let response = frame
         .expect("handler should send a response")
@@ -197,11 +196,15 @@ async fn run_tcp_insert(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         let sender = user_tx.clone();
         let hash_permit = Arc::clone(&permit);
         savepoint(pool).await?;
-        let start = Instant::now();
-        let ((), (response, elapsed_ms)) = tokio::join!(
-            handle_register(request, sender, hash_permit, sink, TOKEN, 32, 64),
-            read_timed(&mut peer, start),
-        );
+        let ((), (response, elapsed_ms)) = timeout(TCP_TIMEOUT, async {
+            let start = Instant::now();
+            tokio::join!(
+                handle_register(request, sender, hash_permit, sink, TOKEN, 32, 64),
+                read_timed(&mut peer, start),
+            )
+        })
+        .await
+        .expect("TCP handler and peer should finish");
         assert!(
             matches!(response, FlpcUnit::Server(ServerUnit::ServerRegister(reply)) if *reply.outcome() == 0)
         );
@@ -213,7 +216,7 @@ async fn run_tcp_insert(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         }
     }
     drop(user_tx);
-    worker.await?;
+    timeout(TCP_TIMEOUT, worker).await??;
     report_samples("stress-reg-tcp", &mut samples);
     Ok(())
 }
@@ -257,11 +260,15 @@ async fn run_tcp_remove(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         let request = RemoveSelf::new("bench-00001".into(), PASSWORD.into());
         let sender = user_tx.clone();
         savepoint(pool).await?;
-        let start = Instant::now();
-        let ((), (response, elapsed_ms)) = tokio::join!(
-            handle_removeself(request, sender, sink, 32, 64),
-            read_timed(&mut peer, start),
-        );
+        let ((), (response, elapsed_ms)) = timeout(TCP_TIMEOUT, async {
+            let start = Instant::now();
+            tokio::join!(
+                handle_removeself(request, sender, sink, 32, 64),
+                read_timed(&mut peer, start),
+            )
+        })
+        .await
+        .expect("TCP handler and peer should finish");
         assert!(
             matches!(response, FlpcUnit::Server(ServerUnit::ServerRemoveSelf(reply)) if *reply.result() == 0)
         );
@@ -272,7 +279,7 @@ async fn run_tcp_remove(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         }
     }
     drop(user_tx);
-    worker.await?;
+    timeout(TCP_TIMEOUT, worker).await??;
     report_samples("stress-remove-tcp", &mut samples);
     Ok(())
 }

@@ -8,6 +8,7 @@ import re
 import signal
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 
 
@@ -105,7 +106,7 @@ class OutputParser:
         self.test_suites = {}
         self.timings = []
         self.run_counts = {"regular": 0, "performance": 0}
-        self.summary_counts = {"regular": 0, "performance": 0}
+        self.summary_counts = {"regular": Counter(), "performance": Counter()}
         self.phases = []
         self.current_phase = None
         self.pending = None
@@ -182,7 +183,8 @@ class OutputParser:
 
         if match := SUMMARY_LINE.match(line):
             if self.current_phase:
-                self.summary_counts[self.current_phase] += sum(map(int, match.groups()))
+                counts = dict(zip(("ok", "FAILED", "ignored"), map(int, match.groups())))
+                self.summary_counts[self.current_phase].update(counts)
             return
 
         if match := FAILURE_HEADER.fullmatch(line):
@@ -248,17 +250,22 @@ def validate_output(parser, catalog_errors, runner_status):
         )
 
     for suite in ("regular", "performance"):
-        if parser.run_counts[suite] != parser.summary_counts[suite]:
+        summary = parser.summary_counts[suite]
+        total = sum(summary.values())
+        if parser.run_counts[suite] != total:
             errors.append(
                 f"{suite.title()} harness count mismatch: running {parser.run_counts[suite]}, "
-                f"summary {parser.summary_counts[suite]}."
+                f"summary {total}."
             )
-        observed = sum(parser.test_suites.get(name) == suite for name in parser.statuses)
-        if observed != parser.summary_counts[suite]:
-            errors.append(
-                f"{suite.title()} result count mismatch: parsed {observed}, "
-                f"summary {parser.summary_counts[suite]}."
-            )
+        observed = Counter(
+            status for name, status in parser.statuses.items() if parser.test_suites.get(name) == suite
+        )
+        for status in STATUS_LABELS:
+            if observed[status] != summary[status]:
+                errors.append(
+                    f"{suite.title()} {status} result count mismatch: parsed {observed[status]}, "
+                    f"summary {summary[status]}."
+                )
 
     for name, status in parser.statuses.items():
         case = parser.cases.get(name)

@@ -8,6 +8,7 @@ fi
 
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
 podman_local=(podman --remote=false)
+postgres_image=docker.io/library/postgres:18.7-bookworm
 container=
 cargo_pid=
 database=lightchat_stress
@@ -60,14 +61,18 @@ for tool in cargo podman timeout setsid; do
     command -v "$tool" >/dev/null || fail "Required command not found: $tool."
 done
 
+if ! "${podman_local[@]}" image exists "$postgres_image"; then
+    "${podman_local[@]}" pull "$postgres_image"
+fi
+
 printf 'Creating disposable PostgreSQL stress container\n'
-container=$(timeout 10s "${podman_local[@]}" create \
+container=$(timeout 10s "${podman_local[@]}" create --pull=never \
     -p '127.0.0.1::5432' \
     -e "POSTGRES_USER=$database" \
     -e "POSTGRES_PASSWORD=$database" \
     -e "POSTGRES_DB=$database" \
     -v /var/lib/postgresql \
-    docker.io/library/postgres:18.7-bookworm)
+    "$postgres_image")
 [[ -n $container ]] || fail 'Podman did not return the stress container ID.'
 
 timeout 10s "${podman_local[@]}" start "$container" >/dev/null

@@ -22,6 +22,7 @@ use crate::database::serial_tests::postgres_test;
 use crate::hashing::{hash_password, verify_password};
 use crate::users::{registration::handle_register, remove::handle_removeself};
 
+const TCP_TIMEOUT: Duration = Duration::from_secs(5);
 const SAMPLE_COUNT: usize = 20;
 const TIMING_PASSWORD: &str = "timing-password";
 const BENCHMARK_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$bGlnaHRjaGF0LWJlbmNobWFyaw$NG0zwI7kM/Cq+dLLB3HMbPwk1I8NW1iSDPpYPr/ImjU";
@@ -210,9 +211,7 @@ async fn read_timed_response(
     peer: &mut Framed<TcpStream, FlpcCodec>,
     start: Instant,
 ) -> (FlpcUnit, f64) {
-    let frame = timeout(Duration::from_secs(5), peer.next())
-        .await
-        .expect("handler response should arrive promptly");
+    let frame = peer.next().await;
     let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
     let response = frame
         .expect("handler should send a response")
@@ -411,11 +410,15 @@ postgres_test! {
             let sender = user_tx.clone();
             let hash_permit = Arc::clone(&permit);
             sqlx::query("SAVEPOINT benchmark_sample").execute(&pool).await?;
-            let start = Instant::now();
-            let ((), (response, elapsed_ms)) = tokio::join!(
-                handle_register(request, sender, hash_permit, sink, "token", 32, 64),
-                read_timed_response(&mut peer, start),
-            );
+            let ((), (response, elapsed_ms)) = timeout(TCP_TIMEOUT, async {
+                let start = Instant::now();
+                tokio::join!(
+                    handle_register(request, sender, hash_permit, sink, "token", 32, 64),
+                    read_timed_response(&mut peer, start),
+                )
+            })
+            .await
+            .expect("TCP handler and peer should finish");
             assert!(matches!(response, FlpcUnit::Server(ServerUnit::ServerRegister(reply)) if *reply.outcome() == 0));
             let registered_hash = registered_hash(&pool).await?;
             if run == 0 {
@@ -425,7 +428,10 @@ postgres_test! {
             if run > 0 { samples.push(elapsed_ms); }
         }
         drop(user_tx);
-        worker.await.expect("user worker should exit");
+        timeout(TCP_TIMEOUT, worker)
+            .await
+            .expect("user worker should exit before timeout")
+            .expect("user worker should finish");
         report_samples("perf-register-tcp", &mut samples);
         pool.close().await;
         Ok(())
@@ -451,11 +457,15 @@ async fn measure_remove_tcp(
         sqlx::query("SAVEPOINT benchmark_sample")
             .execute(&pool)
             .await?;
-        let start = Instant::now();
-        let ((), (response, elapsed_ms)) = tokio::join!(
-            handle_removeself(request, sender, sink, 32, 64),
-            read_timed_response(&mut peer, start),
-        );
+        let ((), (response, elapsed_ms)) = timeout(TCP_TIMEOUT, async {
+            let start = Instant::now();
+            tokio::join!(
+                handle_removeself(request, sender, sink, 32, 64),
+                read_timed_response(&mut peer, start),
+            )
+        })
+        .await
+        .expect("TCP handler and peer should finish");
         assert!(
             matches!(response, FlpcUnit::Server(ServerUnit::ServerRemoveSelf(reply)) if *reply.result() == 0)
         );
@@ -468,7 +478,10 @@ async fn measure_remove_tcp(
         }
     }
     drop(user_tx);
-    worker.await.expect("user worker should exit");
+    timeout(TCP_TIMEOUT, worker)
+        .await
+        .expect("user worker should exit before timeout")
+        .expect("user worker should finish");
     report_samples(case_id, &mut samples);
     pool.close().await;
     Ok(())

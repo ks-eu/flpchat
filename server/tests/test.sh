@@ -5,6 +5,7 @@ cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
 
 database=lightchat_test
 podman_local=(podman --remote=false)
+postgres_image=docker.io/library/postgres:18.7-bookworm
 performance_namespace=database::users::query_performance_tests::
 container=
 cargo_pid=
@@ -120,6 +121,10 @@ for tool in cargo podman timeout setsid; do
     command -v "$tool" >/dev/null || fail "Required command not found: $tool."
 done
 
+if ! "${podman_local[@]}" image exists "$postgres_image"; then
+    "${podman_local[@]}" pull "$postgres_image"
+fi
+
 printf 'Creating PostgreSQL test container\n'
 postgres_args=(
     -p '127.0.0.1::5432'
@@ -127,9 +132,9 @@ postgres_args=(
     -e "POSTGRES_PASSWORD=$database"
     -e "POSTGRES_DB=$database"
     --tmpfs /var/lib/postgresql
-    docker.io/library/postgres:18.7-bookworm
+    "$postgres_image"
 )
-container=$(timeout 10s "${podman_local[@]}" create "${postgres_args[@]}")
+container=$(timeout 10s "${podman_local[@]}" create --pull=never "${postgres_args[@]}")
 [[ -n $container ]] || fail 'Podman did not return the test container ID.'
 
 printf 'Starting PostgreSQL test container\n'

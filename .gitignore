@@ -21,3 +21,6 @@ Thumbs.db
 *.log
 
 /.plans/
+
+/server/.agents/
+/server/.codex/

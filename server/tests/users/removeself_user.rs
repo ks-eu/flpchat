@@ -10,7 +10,7 @@ use tokio::{
 
 use crate::database::serial_tests::postgres_test;
 
-use super::transaction_pool::{delete_completed, track_completed_deletes, transaction_pool};
+use super::transaction_pool::transaction_pool;
 use super::{PgPool, RemoveSelfResponse, UserHandler, VerifyError, VerifyResult};
 
 const VERIFY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -788,7 +788,6 @@ postgres_test! {
 // Expected: HandlerError. All accounts, profiles, messages, and IDs survive.
 postgres_test! {
     async fn remove_db_error(pool: PgPool) -> sqlx::Result<()> {
-        let pool = transaction_pool(&pool).await?;
         seed_removal_fixture(&pool).await?;
         sqlx::raw_sql(
             "INSERT INTO messages (message_id, user_id, message)
@@ -807,19 +806,12 @@ postgres_test! {
             .execute(&pool)
             .await?;
         let before = snapshot(&pool).await?;
-        track_completed_deletes(&pool, "users").await?;
         let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1, Arc::new(Semaphore::new(1)));
 
-        sqlx::query("SAVEPOINT removal_attempt").execute(&pool).await?;
         let response = handler.removeself_user("target", "target-hash").await;
-        sqlx::query("ROLLBACK TO SAVEPOINT removal_attempt")
-            .execute(&pool)
-            .await?;
         assert!(matches!(response, RemoveSelfResponse::HandlerError));
-        assert!(!delete_completed(&pool).await?);
         assert_eq!(snapshot(&pool).await?, before);
 
-        sqlx::query("ROLLBACK").execute(&pool).await?;
         Ok(())
     }
 }

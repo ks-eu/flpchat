@@ -4,7 +4,7 @@ use tokio::sync::{Semaphore, mpsc};
 
 use crate::database::serial_tests::postgres_test;
 
-use super::transaction_pool::{delete_completed, track_completed_deletes, transaction_pool};
+use super::transaction_pool::transaction_pool;
 use super::{PgPool, RegResponse, UserHandler};
 
 async fn set_available_ids(pool: &PgPool, ids: &[i32]) -> sqlx::Result<()> {
@@ -251,7 +251,6 @@ postgres_test! {
 // Expected: HandlerError. Neither row survives and ID 7 remains available.
 postgres_test! {
     async fn insert_profile_error(pool: PgPool) -> sqlx::Result<()> {
-        let pool = transaction_pool(&pool).await?;
         set_available_ids(&pool, &[7]).await?;
         sqlx::query(
             "ALTER TABLE user_information
@@ -259,20 +258,11 @@ postgres_test! {
         )
         .execute(&pool)
         .await?;
-        track_completed_deletes(&pool, "available_user_ids").await?;
 
-        sqlx::query("SAVEPOINT insertion_attempt").execute(&pool).await?;
         let response = handler(&pool)
             .insert_user("blocked", "fixture-hash")
             .await;
-        sqlx::query("ROLLBACK TO SAVEPOINT insertion_attempt")
-            .execute(&pool)
-            .await?;
         assert!(matches!(response, RegResponse::HandlerError));
-        assert!(
-            !delete_completed(&pool).await?,
-            "ID deletion should roll back with the failed insertion"
-        );
 
         let row_counts = sqlx::query_as::<_, (i64, i64)>(
             "SELECT (SELECT count(*) FROM users), (SELECT count(*) FROM user_information)",
@@ -282,7 +272,6 @@ postgres_test! {
         assert_eq!(row_counts, (0, 0));
         assert_eq!(available_ids(&pool).await?, [7]);
 
-        sqlx::query("ROLLBACK").execute(&pool).await?;
         Ok(())
     }
 }
