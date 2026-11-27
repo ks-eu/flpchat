@@ -37,7 +37,7 @@ const FIXTURE_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$bGlnaHRjaGF0LWJlbmNob
 const CLAIM_SQL: &str = include_str!("../src/database/queries/claim_user_id.sql");
 const INSERT_SQL: &str = include_str!("../src/database/queries/insert_user.sql");
 const SET_HASH_SQL: &str = include_str!("../src/database/queries/set_password_hash.sql");
-const REMOVE_SQL: &str = include_str!("../src/database/queries/removeself_user.sql");
+const REMOVE_SQL: &str = include_str!("../src/database/queries/remove_user.sql");
 const EXPLAIN_CLAIM: &str = concat!(
     "EXPLAIN (ANALYZE, TIMING OFF, FORMAT JSON) ",
     include_str!("../src/database/queries/claim_user_id.sql")
@@ -52,7 +52,7 @@ const EXPLAIN_SET_HASH: &str = concat!(
 );
 const EXPLAIN_REMOVE: &str = concat!(
     "EXPLAIN (ANALYZE, TIMING OFF, FORMAT JSON) ",
-    include_str!("../src/database/queries/removeself_user.sql")
+    include_str!("../src/database/queries/remove_user.sql")
 );
 
 #[tokio::main]
@@ -253,12 +253,11 @@ async fn run_tcp_insert(pool: &PgPool) -> Result<(), Box<dyn Error>> {
 
 async fn run_sql_remove(pool: &PgPool) -> sqlx::Result<()> {
     savepoint(pool).await?;
-    let result = sqlx::query_as::<_, (Option<bool>, Option<i32>)>(REMOVE_SQL)
-        .bind("bench-00001")
-        .bind(FIXTURE_HASH)
+    let result: i32 = sqlx::query_scalar(REMOVE_SQL)
+        .bind(1_i32)
         .fetch_one(pool)
         .await?;
-    assert_eq!(result, (Some(true), Some(1)));
+    assert_eq!(result, 1);
     assert!(removed_state(pool).await?);
     rollback_sample(pool).await?;
 
@@ -266,8 +265,7 @@ async fn run_sql_remove(pool: &PgPool) -> sqlx::Result<()> {
     for run in 0..=SAMPLE_COUNT {
         savepoint(pool).await?;
         let mut args = PgArguments::default();
-        args.add("bench-00001").map_err(sqlx::Error::Encode)?;
-        args.add(FIXTURE_HASH).map_err(sqlx::Error::Encode)?;
+        args.add(1_i32).map_err(sqlx::Error::Encode)?;
         let elapsed_ms = plan_ms(pool, EXPLAIN_REMOVE, args).await?;
         assert!(removed_state(pool).await?);
         rollback_sample(pool).await?;

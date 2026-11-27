@@ -15,7 +15,7 @@ pub enum UserRequest {
 }
 
 enum VerifyResult {
-    Success(String),
+    Success(i32),
     WrongCredentials,
     UsernameNotFound,
 }
@@ -44,31 +44,7 @@ impl UserHandler {
                     self.insert_user(request, Arc::clone(&permit)).await;
                 }
                 UserRequest::RemoveSelfRequest(request) => {
-                    let hashed = match self.verify_credentials(
-                        request.username(),
-                        request.password(),
-                        Arc::clone(&permit),
-                    ).await {
-                        Ok(VerifyResult::Success(hashed)) => hashed,
-                        Ok(VerifyResult::WrongCredentials) => {
-                            let _ = request.try_send(RemoveSelfResponse::WrongCredentials);
-                            continue
-                        }
-                        Ok(VerifyResult::UsernameNotFound) => {
-                            let _ = request.try_send(RemoveSelfResponse::UserNotFound);
-                            continue
-                        }
-                        Err(_) => {
-                            let _ = request.try_send(RemoveSelfResponse::HandlerError);
-                            continue
-                        }
-                    };
-                    let response = self
-                        .removeself_user(
-                            request.username(),
-                            &hashed,
-                        ).await;
-                    let _ = request.try_send(response);
+                    self.removeself_user(request, Arc::clone(&permit)).await;
                 }
                 _ => continue,
             }
@@ -141,22 +117,27 @@ impl UserHandler {
         });
     }
 
-    async fn removeself_user(&self, username: &str, hashed_password: &str) -> RemoveSelfResponse {
-        let removal = sqlx::query_as::<_, (Option<bool>, Option<i32>)>(include_str!(
-            "queries/removeself_user.sql"
-        ))
-        .bind(username)
-        .bind(hashed_password)
-        .fetch_one(&self.pool)
-        .await;
-
-        match removal {
-            Ok((None, None)) => RemoveSelfResponse::UserNotFound,
-            Ok((Some(false), None)) => RemoveSelfResponse::WrongCredentials,
-            // The users.user_id CHECK constraint enforces 1..=65535.
-            Ok((Some(true), Some(user_id))) => RemoveSelfResponse::Success(user_id as u16),
-            _ => RemoveSelfResponse::HandlerError,
-        }
+    async fn removeself_user(&self, request: RemoveSelfRequest, permit: Arc<Semaphore>) {
+        let response = match self
+            .verify_credentials(request.username(), request.password(), permit)
+            .await
+        {
+            Ok(VerifyResult::Success(user_id)) => {
+                match sqlx::query_scalar::<_, i32>(include_str!("queries/remove_user.sql"))
+                    .bind(user_id)
+                    .fetch_one(&self.pool)
+                    .await
+                {
+                    // The users.user_id CHECK constraint enforces 1..=65535.
+                    Ok(user_id) => RemoveSelfResponse::Success(user_id as u16),
+                    Err(_) => RemoveSelfResponse::HandlerError,
+                }
+            }
+            Ok(VerifyResult::WrongCredentials) => RemoveSelfResponse::WrongCredentials,
+            Ok(VerifyResult::UsernameNotFound) => RemoveSelfResponse::UserNotFound,
+            Err(_) => RemoveSelfResponse::HandlerError,
+        };
+        let _ = request.try_send(response);
     }
 
     async fn verify_credentials(
@@ -165,8 +146,8 @@ impl UserHandler {
         password: &str,
         permit: Arc<Semaphore>,
     ) -> Result<VerifyResult, VerifyError> {
-        let hashed_password = match self.get_hashed_password(username).await {
-            Ok(Some(hash)) => hash,
+        let (user_id, hashed_password) = match self.get_credentials(username).await {
+            Ok(Some(credentials)) => credentials,
             Ok(None) => {
                 return Ok(VerifyResult::UsernameNotFound)
             }
@@ -185,7 +166,7 @@ impl UserHandler {
         let verify = tokio::task::spawn_blocking(move || {
             let _permit = permit;
             match verify_password(&password, &hashed_password) {
-                Ok(true) => Ok(VerifyResult::Success(hashed_password)),
+                Ok(true) => Ok(VerifyResult::Success(user_id)),
                 Ok(false) => Ok(VerifyResult::WrongCredentials),
                 Err(_) => Err(VerifyError::Argon2Error),
             }
@@ -197,17 +178,11 @@ impl UserHandler {
         }
     }
 
-    async fn get_hashed_password(
-        &self,
-        username: &str,
-    ) -> Result<Option<String>, sqlx::Error> {
-        let hash: Option<String> = sqlx::query_scalar(
-            "SELECT password_hash FROM users WHERE username = $1"
-        )
-        .bind(username)
-        .fetch_optional(&self.pool)
-        .await?;
-        Ok(hash)
+    async fn get_credentials(&self, username: &str) -> Result<Option<(i32, String)>, sqlx::Error> {
+        sqlx::query_as("SELECT user_id, password_hash FROM users WHERE username = $1")
+            .bind(username)
+            .fetch_optional(&self.pool)
+            .await
     }
 }
 
