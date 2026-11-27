@@ -186,6 +186,14 @@
       "input": "password \"café🔑\", hash \"invalid-phc\"",
       "expected": "parsing error"
     },
+    "database::hash::verify_password_tests::password_provisional_marker": {
+      "id": "password-provisional-marker",
+      "component": "verify-password",
+      "suite": "regular",
+      "alias": "Rejects provisional hash marker",
+      "input": "Empty hash with empty and nonempty passwords",
+      "expected": "Both verification attempts return an error."
+    },
     "database::hash::verify_password_tests::password_unsupported": {
       "id": "password-unsupported",
       "component": "verify-password",
@@ -304,7 +312,7 @@
       "suite": "regular",
       "alias": "Preserves the existing account and ID pool",
       "input": "account(7, \"taken\", \"old-hash\"), IDs=[8]; profile admin=true, created 2026-01-01T00:00:00Z, last_online 2026-01-02T00:00:00Z; insert_user(\"taken\", \"different-password\") with a closed semaphore",
-      "expected": "UsernameExists. Account hash, all seeded profile fields, and IDs=[8] remain unchanged."
+      "expected": "UsernameExists. Account hash, profile, and IDs=[8] remain unchanged."
     },
     "database::users::tests::insert_duplicate_full": {
       "id": "insert-duplicate-full",
@@ -367,7 +375,7 @@
       "component": "insert-user",
       "suite": "regular",
       "alias": "Reports a concurrent duplicate at capacity",
-      "input": "Two registrations for the same username. The second waits for the username lock. IDs=[7]",
+      "input": "Two registrations for the same username. The second waits for the first transaction. IDs=[7]",
       "expected": "Success(7) and UsernameExists. The winning password verifies."
     },
     "database::users::tests::insert_concurrent_duplicate_spare_id": {
@@ -375,8 +383,16 @@
       "component": "insert-user",
       "suite": "regular",
       "alias": "Restores the spare ID after a concurrent duplicate",
-      "input": "Two registrations for the same username. The second waits for the username lock. IDs=[7,8]",
+      "input": "Two registrations for the same username. The second waits for the first transaction. IDs=[7,8]",
       "expected": "Success(7) and UsernameExists. ID 8 remains available."
+    },
+    "database::users::tests::insert_reserves_username_before_hashing": {
+      "id": "insert-reserves-username-before-hashing",
+      "component": "insert-user",
+      "suite": "regular",
+      "alias": "Reserves username before hashing",
+      "input": "Pause registration at the hashing permit and insert the same username on a different ID through SQL",
+      "expected": "The provisional row is invisible. The competing insert waits, then reports a username uniqueness violation."
     },
     "database::users::removeself_user_tests::remove_match": {
       "id": "remove-match",
@@ -960,7 +976,7 @@
       "suite": "performance",
       "alias": "Claims an ID and inserts a new account (PostgreSQL Execution Time)",
       "input": "\"bench-new\", the precomputed timing-password fixture hash, and 1,000 existing accounts",
-      "expected": "ID 1001 is claimed, then its account and profile are inserted. Sum the username lock, claim, and insert execution times."
+      "expected": "ID 1001 is claimed, then its account and profile are inserted. Sum the claim, provisional insert, and password update execution times."
     },
     "database::users::query_performance_tests::perf_register_tcp": {
       "id": "perf-register-tcp",

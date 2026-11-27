@@ -61,3 +61,9 @@ fn password_unsupported() {
         Err(expected_error)
     );
 }
+
+#[test]
+fn password_provisional_marker() {
+    assert!(verify_password("", "").is_err());
+    assert!(verify_password("secret", "").is_err());
+}

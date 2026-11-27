@@ -110,7 +110,7 @@ postgres_test! {
 
 // Alias: Preserves the existing account and ID pool
 // Input: account(7, "taken", "old-hash"), IDs=[8]; profile admin=true, created 2026-01-01T00:00:00Z, last_online 2026-01-02T00:00:00Z; insert_user("taken", "different-password") with a closed semaphore
-// Expected: UsernameExists. Account hash, all seeded profile fields, and IDs=[8] remain unchanged.
+// Expected: UsernameExists. Account, profile, and IDs stay unchanged.
 postgres_test! {
     async fn insert_duplicate(pool: PgPool) -> sqlx::Result<()> {
         set_available_ids(&pool, &[8]).await?;
@@ -276,8 +276,12 @@ postgres_test! {
         .execute(&pool)
         .await?;
 
-        let response = insert(&handler(&pool), "blocked", "fixture-password", open_permit())
-            .await;
+        let response = timeout(
+            CLAIM_TIMEOUT,
+            insert(&handler(&pool), "blocked", "fixture-password", Arc::new(Semaphore::new(0))),
+        )
+        .await
+        .expect("profile errors should be returned before acquiring a hashing permit");
         assert!(matches!(response, RegResponse::HandlerError));
 
         let row_counts = sqlx::query_as::<_, (i64, i64)>(
@@ -326,6 +330,10 @@ postgres_test! {
             RegResponse::HandlerError
         ));
         assert_eq!(available_ids(&pool).await?, [7]);
+        let row_counts: (i64, i64) = sqlx::query_as(
+            "SELECT (SELECT count(*) FROM users), (SELECT count(*) FROM user_information)",
+        ).fetch_one(&pool).await?;
+        assert_eq!(row_counts, (0, 0));
         assert!(matches!(
             insert(&handler, "same", "second", open_permit()).await,
             RegResponse::Success(7)
@@ -365,24 +373,13 @@ postgres_test! {
     }
 }
 
-async fn assert_concurrent_duplicate(pool: &PgPool, ids: &[i32]) -> sqlx::Result<()> {
-    set_available_ids(pool, ids).await?;
-    let permit = open_permit();
-    let held = Arc::clone(&permit).acquire_owned().await.unwrap();
-    let first = handler(pool);
-    let first = tokio::spawn(async move { insert(&first, "same", "first", permit).await });
-    wait_for_claim(pool).await?;
-
-    let second = handler(pool);
-    let second =
-        tokio::spawn(async move { insert(&second, "same", "second", closed_permit()).await });
+async fn wait_for_blocked_insert(pool: &PgPool) -> sqlx::Result<()> {
     timeout(CLAIM_TIMEOUT, async {
         loop {
             let blocked: bool = sqlx::query_scalar(
                 "SELECT EXISTS (
-                    SELECT 1 FROM pg_locks
-                    WHERE locktype = 'advisory' AND NOT granted
-                      AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+                    SELECT 1 FROM pg_stat_activity
+                    WHERE datname = current_database() AND cardinality(pg_blocking_pids(pid)) > 0
                 )",
             )
             .fetch_one(pool)
@@ -394,7 +391,21 @@ async fn assert_concurrent_duplicate(pool: &PgPool, ids: &[i32]) -> sqlx::Result
         }
     })
     .await
-    .expect("second registration should wait for the username lock")?;
+    .expect("competing insert should wait for the registration transaction")
+}
+
+async fn assert_concurrent_duplicate(pool: &PgPool, ids: &[i32]) -> sqlx::Result<()> {
+    set_available_ids(pool, ids).await?;
+    let permit = open_permit();
+    let held = Arc::clone(&permit).acquire_owned().await.unwrap();
+    let first = handler(pool);
+    let first = tokio::spawn(async move { insert(&first, "same", "first", permit).await });
+    wait_for_claim(pool).await?;
+
+    let second = handler(pool);
+    let second =
+        tokio::spawn(async move { insert(&second, "same", "second", closed_permit()).await });
+    wait_for_blocked_insert(pool).await?;
     drop(held);
 
     let (first, second) = timeout(CLAIM_TIMEOUT, async { tokio::join!(first, second) })
@@ -420,5 +431,39 @@ postgres_test! {
 postgres_test! {
     async fn insert_concurrent_duplicate_spare_id(pool: PgPool) -> sqlx::Result<()> {
         assert_concurrent_duplicate(&pool, &[7, 8]).await
+    }
+}
+
+postgres_test! {
+    async fn insert_reserves_username_before_hashing(pool: PgPool) -> sqlx::Result<()> {
+        set_available_ids(&pool, &[7, 8]).await?;
+        let permit = open_permit();
+        let held = Arc::clone(&permit).acquire_owned().await.unwrap();
+        let first = handler(&pool);
+        let first = tokio::spawn(async move { insert(&first, "same", "secret", permit).await });
+        wait_for_claim(&pool).await?;
+
+        let other_pool = pool.clone();
+        let competitor = tokio::spawn(async move {
+            sqlx::query(
+                "INSERT INTO users (user_id, username, password_hash)
+                 OVERRIDING SYSTEM VALUE VALUES (8, 'same', 'fixture-hash')",
+            )
+            .execute(&other_pool)
+            .await
+        });
+        wait_for_blocked_insert(&pool).await?;
+        let visible: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users WHERE username = 'same')")
+            .fetch_one(&pool).await?;
+        assert!(!visible, "the provisional row must be invisible to other connections");
+
+        drop(held);
+        let (first, competitor) = timeout(CLAIM_TIMEOUT, async { tokio::join!(first, competitor) })
+            .await.expect("both registrations should finish");
+        assert!(matches!(first.unwrap(), RegResponse::Success(7)));
+        let error = competitor.unwrap().unwrap_err();
+        assert!(matches!(error, sqlx::Error::Database(error)
+            if error.is_unique_violation() && error.constraint() == Some("users_username_key")));
+        Ok(())
     }
 }
