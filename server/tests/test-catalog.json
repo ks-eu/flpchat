@@ -318,9 +318,9 @@
       "id": "insert-duplicate-full",
       "component": "insert-user",
       "suite": "regular",
-      "alias": "Detects duplicate before capacity",
+      "alias": "Reports capacity without revealing a duplicate username",
       "input": "account(7, \"taken\", \"old-hash\"), IDs=[], insert_user(\"taken\", \"different-password\") with a closed semaphore",
-      "expected": "UsernameExists and no writes."
+      "expected": "NotEnoughSpace and no writes."
     },
     "database::users::tests::insert_max_id": {
       "id": "insert-max-id",
@@ -374,9 +374,9 @@
       "id": "insert-concurrent-duplicate-last-id",
       "component": "insert-user",
       "suite": "regular",
-      "alias": "Reports a concurrent duplicate at capacity",
+      "alias": "Reports a concurrent request as full when the last ID is claimed",
       "input": "Two registrations for the same username. The second waits for the first transaction. IDs=[7]",
-      "expected": "Success(7) and UsernameExists. The winning password verifies."
+      "expected": "Success(7) and NotEnoughSpace. The winning password verifies."
     },
     "database::users::tests::insert_concurrent_duplicate_spare_id": {
       "id": "insert-concurrent-duplicate-spare-id",
@@ -646,8 +646,8 @@
       "id": "register-full",
       "component": "handle-register",
       "suite": "regular",
-      "alias": "Reports ID exhaustion",
-      "input": "IDs=[], (\"token\", \"user\", \"secret\")",
+      "alias": "Reports ID exhaustion for an existing username",
+      "input": "Existing username, IDs=[], (\"token\", \"user\", \"secret\")",
       "expected": "Code 3. Account, profile, and available IDs remain unchanged."
     },
     "users::registration::handle_register_tests::register_duplicate": {

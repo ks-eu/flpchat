@@ -264,12 +264,13 @@ postgres_test! {
     }
 }
 
-// Alias: Reports ID exhaustion
-// Input: IDs=[], ("token", "user", "secret")
+// Alias: Reports ID exhaustion for an existing username
+// Input: Existing "user", IDs=[], ("token", "user", "secret")
 // Expected: Code 3. Account, profile, and available IDs remain unchanged.
 postgres_test! {
     async fn register_full(pool: PgPool) -> sqlx::Result<()> {
         set_available_ids(&pool, &[]).await?;
+        seed_existing_user(&pool).await?;
         let before = snapshot(&pool).await?;
         let code = registration_outcome(
             pool.clone(),

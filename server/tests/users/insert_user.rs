@@ -150,9 +150,9 @@ postgres_test! {
     }
 }
 
-// Alias: Detects duplicate before capacity
+// Alias: Reports capacity without revealing a duplicate username
 // Input: account(7, "taken", "old-hash"), IDs=[], insert_user("taken", "different-password") with a closed semaphore
-// Expected: UsernameExists and no writes.
+// Expected: NotEnoughSpace and no writes.
 postgres_test! {
     async fn insert_duplicate_full(pool: PgPool) -> sqlx::Result<()> {
         set_available_ids(&pool, &[]).await?;
@@ -160,7 +160,7 @@ postgres_test! {
 
         assert!(matches!(
             insert(&handler(&pool), "taken", "different-password", closed_permit()).await,
-            RegResponse::UsernameExists
+            RegResponse::NotEnoughSpace
         ));
         let account = sqlx::query_as::<_, (i32, String, String)>(
             "SELECT user_id, username, password_hash FROM users",
@@ -394,7 +394,11 @@ async fn wait_for_blocked_insert(pool: &PgPool) -> sqlx::Result<()> {
     .expect("competing insert should wait for the registration transaction")
 }
 
-async fn assert_concurrent_duplicate(pool: &PgPool, ids: &[i32]) -> sqlx::Result<()> {
+async fn assert_concurrent_duplicate(
+    pool: &PgPool,
+    ids: &[i32],
+    expected: RegResponse,
+) -> sqlx::Result<()> {
     set_available_ids(pool, ids).await?;
     let permit = open_permit();
     let held = Arc::clone(&permit).acquire_owned().await.unwrap();
@@ -412,7 +416,10 @@ async fn assert_concurrent_duplicate(pool: &PgPool, ids: &[i32]) -> sqlx::Result
         .await
         .expect("both registrations should finish");
     assert!(matches!(first.unwrap(), RegResponse::Success(7)));
-    assert!(matches!(second.unwrap(), RegResponse::UsernameExists));
+    assert_eq!(
+        std::mem::discriminant(&second.unwrap()),
+        std::mem::discriminant(&expected),
+    );
     assert_eq!(available_ids(pool).await?, &ids[1..]);
     let hash: String =
         sqlx::query_scalar("SELECT password_hash FROM users WHERE username = 'same'")
@@ -424,13 +431,13 @@ async fn assert_concurrent_duplicate(pool: &PgPool, ids: &[i32]) -> sqlx::Result
 
 postgres_test! {
     async fn insert_concurrent_duplicate_last_id(pool: PgPool) -> sqlx::Result<()> {
-        assert_concurrent_duplicate(&pool, &[7]).await
+        assert_concurrent_duplicate(&pool, &[7], RegResponse::NotEnoughSpace).await
     }
 }
 
 postgres_test! {
     async fn insert_concurrent_duplicate_spare_id(pool: PgPool) -> sqlx::Result<()> {
-        assert_concurrent_duplicate(&pool, &[7, 8]).await
+        assert_concurrent_duplicate(&pool, &[7, 8], RegResponse::UsernameExists).await
     }
 }
 
