@@ -1,8 +1,8 @@
 use tokio::sync::{oneshot, mpsc};
 use tokio::net::TcpStream;
 use tokio_util::codec::Framed;
-use futures_util::stream::SplitSink;
-use futures_util::SinkExt;
+use futures_util::stream::{SplitStream, SplitSink};
+use futures_util::{StreamExt, SinkExt};
 
 use flpc::unit::{
     FlpcUnit,
@@ -14,8 +14,8 @@ use flpc::tokio::{CodecError, FlpcCodec};
 use crate::database::users::UserRequest;
 use crate::connection::invalid_credential_lengths;
 
+type FlpcStream = SplitStream<Framed<TcpStream, FlpcCodec>>;
 type FlpcSink = SplitSink<Framed<TcpStream, FlpcCodec>, FlpcUnit>;
-
 
 pub enum LoginResponse {
     Success(u16),
@@ -60,7 +60,7 @@ impl LoginRequest {
 }
 
 
-pub async fn handle_login(
+pub async fn handle_login_verification(
     request: Login,
     user_tx: mpsc::Sender<UserRequest>,
     sink: FlpcSink,
