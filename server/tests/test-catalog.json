@@ -215,39 +215,39 @@
       "component": "user-handler-run",
       "suite": "regular",
       "alias": "Registers a new username",
-      "input": "IDs=[7], RegRequest(\"new-user\", \"new-hash\")",
-      "expected": "Success(7). Account 7 stores \"new-hash\"."
+      "input": "IDs=[7], RegRequest(\"new-user\", \"new-password\")",
+      "expected": "Success(7). The stored hash verifies \"new-password\"."
     },
-    "database::users::user_handler_tests::worker_reg_same_hash": {
-      "id": "worker-reg-same-hash",
+    "database::users::user_handler_tests::worker_reg_same_password": {
+      "id": "worker-reg-same-password",
       "component": "user-handler-run",
       "suite": "regular",
-      "alias": "Rejects the same username and hash",
-      "input": "account(7, \"taken\", \"old-hash\"), IDs=[8], RegRequest(\"taken\", \"old-hash\")",
+      "alias": "Rejects the same username and password",
+      "input": "account(7, \"taken\", H(\"secret\")), IDs=[8], RegRequest(\"taken\", \"secret\")",
       "expected": "UsernameExists. Account 7 and ID 8 stay unchanged."
     },
-    "database::users::user_handler_tests::worker_reg_different_hash": {
-      "id": "worker-reg-different-hash",
+    "database::users::user_handler_tests::worker_reg_different_password": {
+      "id": "worker-reg-different-password",
       "component": "user-handler-run",
       "suite": "regular",
-      "alias": "Rejects the same username with a different hash",
-      "input": "account(7, \"taken\", \"old-hash\"), IDs=[8], RegRequest(\"taken\", \"different-hash\")",
+      "alias": "Rejects the same username with a different password",
+      "input": "account(7, \"taken\", \"old-hash\"), IDs=[8], RegRequest(\"taken\", \"different-password\")",
       "expected": "UsernameExists. Stored hash remains \"old-hash\"; ID 8 stays available."
     },
-    "database::users::user_handler_tests::worker_reg_reused_hash": {
-      "id": "worker-reg-reused-hash",
+    "database::users::user_handler_tests::worker_reg_reused_password": {
+      "id": "worker-reg-reused-password",
       "component": "user-handler-run",
       "suite": "regular",
-      "alias": "Accepts a new username with an existing hash",
-      "input": "account(7, \"taken\", \"old-hash\"), IDs=[8], RegRequest(\"new-user\", \"old-hash\")",
-      "expected": "Success(8). Both accounts store \"old-hash\"."
+      "alias": "Accepts a new username with an existing password",
+      "input": "account(7, \"taken\", H(\"secret\")), IDs=[8], RegRequest(\"new-user\", \"secret\")",
+      "expected": "Success(8). Both hashes verify the same password and differ."
     },
     "database::users::user_handler_tests::worker_reg_full": {
       "id": "worker-reg-full",
       "component": "user-handler-run",
       "suite": "regular",
       "alias": "Reports exhausted IDs",
-      "input": "IDs=[], RegRequest(\"new-user\", \"new-hash\")",
+      "input": "IDs=[], RegRequest(\"new-user\", \"new-password\")",
       "expected": "NotEnoughSpace. No account or profile created."
     },
     "database::users::user_handler_tests::worker_remove_match": {
@@ -279,7 +279,7 @@
       "component": "user-handler-run",
       "suite": "regular",
       "alias": "Continues after a dropped reply receiver",
-      "input": "IDs=[7,8]. Queue RegRequest(\"first\", \"first-hash\"), drop its reply receiver, then queue RegRequest(\"second\", \"second-hash\").",
+      "input": "IDs=[7,8]. Queue RegRequest(\"first\", \"first-password\"), drop its reply receiver, then queue RegRequest(\"second\", \"second-password\").",
       "expected": "Both accounts are inserted. The second caller receives Success(8)."
     },
     "database::users::user_handler_tests::worker_drain": {
@@ -287,7 +287,7 @@
       "component": "user-handler-run",
       "suite": "regular",
       "alias": "Drains the queue before shutdown",
-      "input": "IDs=[7], queue RegRequest(\"queued\", \"queued-hash\"), then close all request senders before running the worker.",
+      "input": "IDs=[7], queue RegRequest(\"queued\", \"queued-password\"), then close all request senders before running the worker.",
       "expected": "The caller receives Success(7) and run returns within the test timeout."
     },
     "database::users::tests::insert_new": {
@@ -295,15 +295,15 @@
       "component": "insert-user",
       "suite": "regular",
       "alias": "Inserts account and profile",
-      "input": "IDs=[7,42], insert_user(\"new-user\", \"fixture-hash\")",
-      "expected": "Success(7). Account 7 stores the exact username and hash; matching profile has admin_status=false, a creation timestamp and last_online=NULL. Remaining IDs=[42]."
+      "input": "IDs=[7,42], insert_user(\"new-user\", \"fixture-password\")",
+      "expected": "Success(7). Stored hash verifies the submitted password. Profile defaults are set. Remaining IDs=[42]."
     },
     "database::users::tests::insert_duplicate": {
       "id": "insert-duplicate",
       "component": "insert-user",
       "suite": "regular",
       "alias": "Preserves the existing account and ID pool",
-      "input": "account(7, \"taken\", \"old-hash\"), IDs=[8]; profile admin=true, created 2026-01-01T00:00:00Z, last_online 2026-01-02T00:00:00Z; insert_user(\"taken\", \"different-hash\")",
+      "input": "account(7, \"taken\", \"old-hash\"), IDs=[8]; profile admin=true, created 2026-01-01T00:00:00Z, last_online 2026-01-02T00:00:00Z; insert_user(\"taken\", \"different-password\") with a closed semaphore",
       "expected": "UsernameExists. Account hash, all seeded profile fields, and IDs=[8] remain unchanged."
     },
     "database::users::tests::insert_duplicate_full": {
@@ -311,7 +311,7 @@
       "component": "insert-user",
       "suite": "regular",
       "alias": "Detects duplicate before capacity",
-      "input": "account(7, \"taken\", \"old-hash\"), IDs=[], insert_user(\"taken\", \"different-hash\")",
+      "input": "account(7, \"taken\", \"old-hash\"), IDs=[], insert_user(\"taken\", \"different-password\") with a closed semaphore",
       "expected": "UsernameExists and no writes."
     },
     "database::users::tests::insert_max_id": {
@@ -319,7 +319,7 @@
       "component": "insert-user",
       "suite": "regular",
       "alias": "Claims the last usable ID",
-      "input": "IDs=[65535], insert_user(\"last-user\", \"fixture-hash\")",
+      "input": "IDs=[65535], insert_user(\"last-user\", \"fixture-password\")",
       "expected": "Success(65535); matching account and profile exist and IDs=[]."
     },
     "database::users::tests::insert_full": {
@@ -327,7 +327,7 @@
       "component": "insert-user",
       "suite": "regular",
       "alias": "Creates no rows when IDs are exhausted",
-      "input": "IDs=[], insert_user(\"new-user\", \"fixture-hash\")",
+      "input": "IDs=[], insert_user(\"new-user\", \"fixture-password\") with a closed semaphore",
       "expected": "NotEnoughSpace; no account or profile row for \"new-user\"."
     },
     "database::users::tests::insert_lowest": {
@@ -335,7 +335,7 @@
       "component": "insert-user",
       "suite": "regular",
       "alias": "Chooses the lowest available ID",
-      "input": "IDs=[7,42,101], insert_user(\"new-user\", \"fixture-hash\")",
+      "input": "IDs=[7,42,101], insert_user(\"new-user\", \"fixture-password\")",
       "expected": "Success(7); remaining IDs=[42,101]."
     },
     "database::users::tests::insert_profile_error": {
@@ -343,8 +343,40 @@
       "component": "insert-user",
       "suite": "regular",
       "alias": "Rolls back when profile insertion fails",
-      "input": "IDs=[7], constraint rejects profile username \"blocked\", insert_user(\"blocked\", \"fixture-hash\")",
+      "input": "IDs=[7], constraint rejects profile username \"blocked\", insert_user(\"blocked\", \"fixture-password\")",
       "expected": "HandlerError. Neither row survives and ID 7 remains available."
+    },
+    "database::users::tests::insert_hash_failure_reuses_id": {
+      "id": "insert-hash-failure-reuses-id",
+      "component": "insert-user",
+      "suite": "regular",
+      "alias": "Reuses an ID after hashing fails",
+      "input": "One free ID and a closed semaphore, followed by a retry for the same username with an open semaphore",
+      "expected": "HandlerError, then Success(7). Only the retry creates an account."
+    },
+    "database::users::tests::insert_cancelled_worker_reuses_id": {
+      "id": "insert-cancelled-worker-reuses-id",
+      "component": "insert-user",
+      "suite": "regular",
+      "alias": "Reuses an ID after worker cancellation",
+      "input": "Abort the worker after it locks ID 7 and before releasing a hashing permit",
+      "expected": "The retry for the same username claims ID 7 and stores its own password hash."
+    },
+    "database::users::tests::insert_concurrent_duplicate_last_id": {
+      "id": "insert-concurrent-duplicate-last-id",
+      "component": "insert-user",
+      "suite": "regular",
+      "alias": "Reports a concurrent duplicate at capacity",
+      "input": "Two registrations for the same username. The second waits for the username lock. IDs=[7]",
+      "expected": "Success(7) and UsernameExists. The winning password verifies."
+    },
+    "database::users::tests::insert_concurrent_duplicate_spare_id": {
+      "id": "insert-concurrent-duplicate-spare-id",
+      "component": "insert-user",
+      "suite": "regular",
+      "alias": "Restores the spare ID after a concurrent duplicate",
+      "input": "Two registrations for the same username. The second waits for the username lock. IDs=[7,8]",
+      "expected": "Success(7) and UsernameExists. ID 8 remains available."
     },
     "database::users::removeself_user_tests::remove_match": {
       "id": "remove-match",
@@ -926,9 +958,9 @@
       "id": "perf-insert-sql",
       "component": "insert-user",
       "suite": "performance",
-      "alias": "Inserts a new account through insert_user.sql (PostgreSQL Execution Time)",
+      "alias": "Claims an ID and inserts a new account (PostgreSQL Execution Time)",
       "input": "\"bench-new\", the precomputed timing-password fixture hash, and 1,000 existing accounts",
-      "expected": "(false, Some(1001)); account/profile are inserted and ID 1001 is claimed."
+      "expected": "ID 1001 is claimed, then its account and profile are inserted. Sum the username lock, claim, and insert execution times."
     },
     "database::users::query_performance_tests::perf_register_tcp": {
       "id": "perf-register-tcp",

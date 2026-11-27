@@ -26,6 +26,14 @@ const TCP_TIMEOUT: Duration = Duration::from_secs(5);
 const SAMPLE_COUNT: usize = 20;
 const TIMING_PASSWORD: &str = "timing-password";
 const BENCHMARK_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$bGlnaHRjaGF0LWJlbmNobWFyaw$NG0zwI7kM/Cq+dLLB3HMbPwk1I8NW1iSDPpYPr/ImjU";
+const EXPLAIN_LOCK_USERNAME: &str = concat!(
+    "EXPLAIN (ANALYZE, TIMING OFF, FORMAT JSON) ",
+    include_str!("../../src/database/queries/lock_username.sql"),
+);
+const EXPLAIN_CLAIM: &str = concat!(
+    "EXPLAIN (ANALYZE, TIMING OFF, FORMAT JSON) ",
+    include_str!("../../src/database/queries/claim_user_id.sql"),
+);
 const EXPLAIN_INSERT: &str = concat!(
     "EXPLAIN (ANALYZE, TIMING OFF, FORMAT JSON) ",
     include_str!("../../src/database/queries/insert_user.sql"),
@@ -267,7 +275,7 @@ fn perf_verify_password() {
     report_samples("perf-verify-password", &mut samples);
 }
 
-// Alias: Inserts a new account through insert_user.sql (PostgreSQL Execution Time)
+// Alias: Claims an ID and inserts a new account (PostgreSQL Execution Time)
 // Input: "bench-new", the precomputed timing-password fixture hash, and 1,000 existing accounts
 // Expected: (false, Some(1001)); account/profile are inserted and ID 1001 is claimed.
 postgres_test! {
@@ -277,17 +285,30 @@ postgres_test! {
         let mut samples = Vec::with_capacity(SAMPLE_COUNT);
         for run in 0..=SAMPLE_COUNT {
             sqlx::query("SAVEPOINT benchmark_sample").execute(&pool).await?;
-            let raw = sqlx::query_as::<_, (bool, Option<i32>)>(include_str!("../../src/database/queries/insert_user.sql"))
-                .bind("bench-new").bind(BENCHMARK_HASH).fetch_one(&pool).await?;
+            sqlx::query(include_str!("../../src/database/queries/lock_username.sql"))
+                .bind("bench-new").execute(&pool).await?;
+            let raw = sqlx::query_as::<_, (bool, Option<i32>)>(
+                include_str!("../../src/database/queries/claim_user_id.sql"),
+            ).bind("bench-new").fetch_one(&pool).await?;
             assert_eq!(raw, (false, Some(1001)));
+            let inserted: i32 = sqlx::query_scalar(include_str!("../../src/database/queries/insert_user.sql"))
+                .bind(1001_i32).bind("bench-new").bind(BENCHMARK_HASH).fetch_one(&pool).await?;
+            assert_eq!(inserted, 1001);
             assert!(sql_insert_state(&pool).await?);
             sqlx::raw_sql("ROLLBACK TO SAVEPOINT benchmark_sample; RELEASE SAVEPOINT benchmark_sample").execute(&pool).await?;
 
             sqlx::query("SAVEPOINT benchmark_sample").execute(&pool).await?;
+            let mut lock_args = PgArguments::default();
+            lock_args.add("bench-new").map_err(sqlx::Error::Encode)?;
+            let lock_ms = explain_ms(&pool, EXPLAIN_LOCK_USERNAME, lock_args).await?;
+            let mut claim_args = PgArguments::default();
+            claim_args.add("bench-new").map_err(sqlx::Error::Encode)?;
+            let claim_ms = explain_ms(&pool, EXPLAIN_CLAIM, claim_args).await?;
             let mut args = PgArguments::default();
+            args.add(1001_i32).map_err(sqlx::Error::Encode)?;
             args.add("bench-new").map_err(sqlx::Error::Encode)?;
             args.add(BENCHMARK_HASH).map_err(sqlx::Error::Encode)?;
-            let elapsed_ms = explain_ms(&pool, EXPLAIN_INSERT, args).await?;
+            let elapsed_ms = lock_ms + claim_ms + explain_ms(&pool, EXPLAIN_INSERT, args).await?;
             assert!(sql_insert_state(&pool).await?);
             sqlx::raw_sql("ROLLBACK TO SAVEPOINT benchmark_sample; RELEASE SAVEPOINT benchmark_sample").execute(&pool).await?;
             if run > 0 { samples.push(elapsed_ms); }
@@ -397,23 +418,19 @@ postgres_test! {
 // Expected: Peer decodes ServerRegister code 0; account/profile and ID 1001 state are correct.
 postgres_test! {
     async fn perf_register_tcp(pool: PgPool) -> sqlx::Result<()> {
-        let pool = transaction_pool(&pool).await?;
         seed_accounts(&pool, false).await?;
         let (user_tx, user_rx) = mpsc::channel(1);
-        let permit = Arc::new(Semaphore::new(1));
-        let worker = tokio::spawn(UserHandler::new(pool.clone(), user_rx).run(Arc::clone(&permit)));
+        let worker = tokio::spawn(UserHandler::new(pool.clone(), user_rx).run(Arc::new(Semaphore::new(1))));
         let mut samples = Vec::with_capacity(SAMPLE_COUNT);
         for run in 0..=SAMPLE_COUNT {
             let (server, mut peer) = loopback().await;
             let (sink, _) = server.split();
             let request = Register::new("token".into(), "bench-new".into(), TIMING_PASSWORD.into());
             let sender = user_tx.clone();
-            let hash_permit = Arc::clone(&permit);
-            sqlx::query("SAVEPOINT benchmark_sample").execute(&pool).await?;
             let ((), (response, elapsed_ms)) = timeout(TCP_TIMEOUT, async {
                 let start = Instant::now();
                 tokio::join!(
-                    handle_register(request, sender, hash_permit, sink, "token", 32, 64),
+                    handle_register(request, sender, sink, "token", 32, 64),
                     read_timed_response(&mut peer, start),
                 )
             })
@@ -424,7 +441,10 @@ postgres_test! {
             if run == 0 {
                 assert_eq!(verify_password(TIMING_PASSWORD, &registered_hash), Ok(true));
             }
-            sqlx::raw_sql("ROLLBACK TO SAVEPOINT benchmark_sample; RELEASE SAVEPOINT benchmark_sample").execute(&pool).await?;
+            sqlx::query(
+                "WITH removed AS (DELETE FROM users WHERE user_id = 1001 RETURNING user_id)
+                 INSERT INTO available_user_ids (user_id) SELECT user_id FROM removed",
+            ).execute(&pool).await?;
             if run > 0 { samples.push(elapsed_ms); }
         }
         drop(user_tx);

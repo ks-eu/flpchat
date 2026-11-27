@@ -8,7 +8,7 @@ use tokio::{
     time::timeout,
 };
 
-use crate::database::serial_tests::postgres_test;
+use crate::database::{hash::verify_password, serial_tests::postgres_test};
 
 use super::{
     RegRequest, RegResponse, RemoveSelfRequest, RemoveSelfResponse, UserHandler, UserRequest,
@@ -56,13 +56,13 @@ fn start_worker(pool: &PgPool) -> (mpsc::Sender<UserRequest>, JoinHandle<()>) {
 fn queue_registration(
     user_tx: &mpsc::Sender<UserRequest>,
     username: &str,
-    hash: &str,
+    password: &str,
 ) -> oneshot::Receiver<RegResponse> {
     let (reply_tx, reply_rx) = oneshot::channel();
     user_tx
         .try_send(UserRequest::RegRequest(RegRequest::new(
             username.into(),
-            hash.into(),
+            password.into(),
             reply_tx,
         )))
         .unwrap();
@@ -131,17 +131,19 @@ async fn available_ids(pool: &PgPool) -> sqlx::Result<Vec<i32>> {
 }
 
 // Alias: Registers a new username
-// Input: IDs=[7], RegRequest("new-user", "new-hash")
-// Expected: Success(7). Account 7 stores "new-hash".
+// Input: IDs=[7], RegRequest("new-user", "new-password")
+// Expected: Success(7). The stored hash verifies "new-password".
 postgres_test! {
     async fn worker_reg_new(pool: PgPool) -> sqlx::Result<()> {
         set_available_ids(&pool, &[7]).await?;
         let (user_tx, worker) = start_worker(&pool);
-        let reply = queue_registration(&user_tx, "new-user", "new-hash");
+        let reply = queue_registration(&user_tx, "new-user", "new-password");
         let result = reply_and_finish(user_tx, worker, reply).await;
 
         assert!(matches!(result, RegResponse::Success(7)));
-        assert_eq!(account(&pool, "new-user").await?, Some((7, "new-hash".into())));
+        let (id, hash) = account(&pool, "new-user").await?.unwrap();
+        assert_eq!(id, 7);
+        assert_eq!(verify_password("new-password", &hash), Ok(true));
         assert_eq!(profile_id(&pool, "new-user").await?, Some(7));
         assert!(available_ids(&pool).await?.is_empty());
 
@@ -149,19 +151,20 @@ postgres_test! {
     }
 }
 
-// Alias: Rejects the same username and hash
-// Input: account(7, "taken", "old-hash"), IDs=[8], RegRequest("taken", "old-hash")
+// Alias: Rejects the same username and password
+// Input: account(7, "taken", H("secret")), IDs=[8], RegRequest("taken", "secret")
 // Expected: UsernameExists. Account 7 and ID 8 stay unchanged.
 postgres_test! {
-    async fn worker_reg_same_hash(pool: PgPool) -> sqlx::Result<()> {
+    async fn worker_reg_same_password(pool: PgPool) -> sqlx::Result<()> {
         set_available_ids(&pool, &[8]).await?;
-        seed_account(&pool, 7, "taken", "old-hash").await?;
+        let hash = Argon2::default().hash_password(b"secret").unwrap().to_string();
+        seed_account(&pool, 7, "taken", &hash).await?;
         let (user_tx, worker) = start_worker(&pool);
-        let reply = queue_registration(&user_tx, "taken", "old-hash");
+        let reply = queue_registration(&user_tx, "taken", "secret");
         let result = reply_and_finish(user_tx, worker, reply).await;
 
         assert!(matches!(result, RegResponse::UsernameExists));
-        assert_eq!(account(&pool, "taken").await?, Some((7, "old-hash".into())));
+        assert_eq!(account(&pool, "taken").await?, Some((7, hash.clone())));
         assert_eq!(profile_id(&pool, "taken").await?, Some(7));
         assert_eq!(available_ids(&pool).await?, [8]);
 
@@ -169,15 +172,15 @@ postgres_test! {
     }
 }
 
-// Alias: Rejects the same username with a different hash
-// Input: account(7, "taken", "old-hash"), IDs=[8], RegRequest("taken", "different-hash")
+// Alias: Rejects the same username with a different password
+// Input: account(7, "taken", "old-hash"), IDs=[8], RegRequest("taken", "different-password")
 // Expected: UsernameExists. Stored hash remains "old-hash"; ID 8 stays available.
 postgres_test! {
-    async fn worker_reg_different_hash(pool: PgPool) -> sqlx::Result<()> {
+    async fn worker_reg_different_password(pool: PgPool) -> sqlx::Result<()> {
         set_available_ids(&pool, &[8]).await?;
         seed_account(&pool, 7, "taken", "old-hash").await?;
         let (user_tx, worker) = start_worker(&pool);
-        let reply = queue_registration(&user_tx, "taken", "different-hash");
+        let reply = queue_registration(&user_tx, "taken", "different-password");
         let result = reply_and_finish(user_tx, worker, reply).await;
 
         assert!(matches!(result, RegResponse::UsernameExists));
@@ -189,20 +192,24 @@ postgres_test! {
     }
 }
 
-// Alias: Accepts a new username with an existing hash
-// Input: account(7, "taken", "old-hash"), IDs=[8], RegRequest("new-user", "old-hash")
-// Expected: Success(8). Both accounts store "old-hash".
+// Alias: Accepts a new username with an existing password
+// Input: account(7, "taken", H("secret")), IDs=[8], RegRequest("new-user", "secret")
+// Expected: Success(8). The two distinct hashes verify the same password.
 postgres_test! {
-    async fn worker_reg_reused_hash(pool: PgPool) -> sqlx::Result<()> {
+    async fn worker_reg_reused_password(pool: PgPool) -> sqlx::Result<()> {
         set_available_ids(&pool, &[8]).await?;
-        seed_account(&pool, 7, "taken", "old-hash").await?;
+        let hash = Argon2::default().hash_password(b"secret").unwrap().to_string();
+        seed_account(&pool, 7, "taken", &hash).await?;
         let (user_tx, worker) = start_worker(&pool);
-        let reply = queue_registration(&user_tx, "new-user", "old-hash");
+        let reply = queue_registration(&user_tx, "new-user", "secret");
         let result = reply_and_finish(user_tx, worker, reply).await;
 
         assert!(matches!(result, RegResponse::Success(8)));
-        assert_eq!(account(&pool, "taken").await?, Some((7, "old-hash".into())));
-        assert_eq!(account(&pool, "new-user").await?, Some((8, "old-hash".into())));
+        assert_eq!(account(&pool, "taken").await?, Some((7, hash.clone())));
+        let (id, new_hash) = account(&pool, "new-user").await?.unwrap();
+        assert_eq!(id, 8);
+        assert_ne!(new_hash, hash);
+        assert_eq!(verify_password("secret", &new_hash), Ok(true));
         assert_eq!(profile_id(&pool, "taken").await?, Some(7));
         assert_eq!(profile_id(&pool, "new-user").await?, Some(8));
         assert!(available_ids(&pool).await?.is_empty());
@@ -212,13 +219,13 @@ postgres_test! {
 }
 
 // Alias: Reports exhausted IDs
-// Input: IDs=[], RegRequest("new-user", "new-hash")
+// Input: IDs=[], RegRequest("new-user", "new-password")
 // Expected: NotEnoughSpace. No account or profile created.
 postgres_test! {
     async fn worker_reg_full(pool: PgPool) -> sqlx::Result<()> {
         set_available_ids(&pool, &[]).await?;
         let (user_tx, worker) = start_worker(&pool);
-        let reply = queue_registration(&user_tx, "new-user", "new-hash");
+        let reply = queue_registration(&user_tx, "new-user", "new-password");
         let result = reply_and_finish(user_tx, worker, reply).await;
 
         assert!(matches!(result, RegResponse::NotEnoughSpace));
@@ -294,23 +301,27 @@ postgres_test! {
 }
 
 // Alias: Continues after a dropped reply receiver
-// Input: IDs=[7,8]. Queue RegRequest("first", "first-hash"), drop its reply receiver, then queue RegRequest("second", "second-hash").
+// Input: IDs=[7,8]. Queue RegRequest("first", "first-password"), drop its reply receiver, then queue RegRequest("second", "second-password").
 // Expected: Both accounts are inserted. The second caller receives Success(8).
 postgres_test! {
     async fn worker_reply_dropped(pool: PgPool) -> sqlx::Result<()> {
         set_available_ids(&pool, &[7, 8]).await?;
         let (user_tx, user_rx) = mpsc::channel(2);
-        let first = queue_registration(&user_tx, "first", "first-hash");
+        let first = queue_registration(&user_tx, "first", "first-password");
         drop(first);
-        let second = queue_registration(&user_tx, "second", "second-hash");
+        let second = queue_registration(&user_tx, "second", "second-password");
         let worker = tokio::spawn(
             UserHandler::new(pool.clone(), user_rx).run(Arc::new(Semaphore::new(1))),
         );
         let result = reply_and_finish(user_tx, worker, second).await;
 
         assert!(matches!(result, RegResponse::Success(8)));
-        assert_eq!(account(&pool, "first").await?, Some((7, "first-hash".into())));
-        assert_eq!(account(&pool, "second").await?, Some((8, "second-hash".into())));
+        let (id, hash) = account(&pool, "first").await?.unwrap();
+        assert_eq!(id, 7);
+        assert_eq!(verify_password("first-password", &hash), Ok(true));
+        let (id, hash) = account(&pool, "second").await?.unwrap();
+        assert_eq!(id, 8);
+        assert_eq!(verify_password("second-password", &hash), Ok(true));
         assert_eq!(profile_id(&pool, "first").await?, Some(7));
         assert_eq!(profile_id(&pool, "second").await?, Some(8));
         assert!(available_ids(&pool).await?.is_empty());
@@ -320,13 +331,13 @@ postgres_test! {
 }
 
 // Alias: Drains the queue before shutdown
-// Input: IDs=[7], queue RegRequest("queued", "queued-hash"), then close all request senders before running the worker.
+// Input: IDs=[7], queue RegRequest("queued", "queued-password"), then close all request senders before running the worker.
 // Expected: The caller receives Success(7) and run returns within the test timeout.
 postgres_test! {
     async fn worker_drain(pool: PgPool) -> sqlx::Result<()> {
         set_available_ids(&pool, &[7]).await?;
         let (user_tx, user_rx) = mpsc::channel(1);
-        let reply = queue_registration(&user_tx, "queued", "queued-hash");
+        let reply = queue_registration(&user_tx, "queued", "queued-password");
         drop(user_tx);
 
         let worker = UserHandler::new(pool.clone(), user_rx);
@@ -337,7 +348,9 @@ postgres_test! {
         .expect("worker should drain and exit");
         let (_, reply) = result;
         assert!(matches!(reply, Ok(RegResponse::Success(7))));
-        assert_eq!(account(&pool, "queued").await?, Some((7, "queued-hash".into())));
+        let (id, hash) = account(&pool, "queued").await?.unwrap();
+        assert_eq!(id, 7);
+        assert_eq!(verify_password("queued-password", &hash), Ok(true));
         assert_eq!(profile_id(&pool, "queued").await?, Some(7));
         assert!(available_ids(&pool).await?.is_empty());
 

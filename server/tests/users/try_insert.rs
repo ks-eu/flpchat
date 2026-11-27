@@ -29,7 +29,7 @@ fn assert_no_queued_request(user_rx: &mut mpsc::Receiver<UserRequest>) {
 
 fn fill_request_queue(user_tx: &mpsc::Sender<UserRequest>) {
     let (response_tx, _) = oneshot::channel();
-    let request = RegRequest::new("occupied".into(), "fixture-hash".into(), response_tx);
+    let request = RegRequest::new("occupied".into(), "fixture-password".into(), response_tx);
     assert!(user_tx.try_send(UserRequest::RegRequest(request)).is_ok());
 }
 
@@ -39,12 +39,12 @@ fn fill_request_queue(user_tx: &mpsc::Sender<UserRequest>) {
 #[tokio::test]
 async fn try_insert_forward() {
     let (user_tx, mut user_rx) = mpsc::channel(1);
-    let mut caller = pin!(try_insert("éé", "fixture-hash", user_tx));
+    let mut caller = pin!(try_insert("éé", "fixture-password", user_tx));
 
     assert!(poll!(caller.as_mut()).is_pending());
     let request = receive_registration(&mut user_rx);
     assert_eq!(request.username(), "éé");
-    assert_eq!(request.hashed_password(), "fixture-hash");
+    assert_eq!(request.password(), "fixture-password");
     assert_no_queued_request(&mut user_rx);
     assert!(request.try_send(RegResponse::Success(u16::MAX)).is_ok());
 
@@ -63,7 +63,7 @@ async fn try_insert_no_receiver() {
     let (user_tx, user_rx) = mpsc::channel(1);
     drop(user_rx);
 
-    let response = timeout(TEST_TIMEOUT, try_insert("éé", "fixture-hash", user_tx))
+    let response = timeout(TEST_TIMEOUT, try_insert("éé", "fixture-password", user_tx))
         .await
         .expect("caller should finish when the receiver is gone");
     assert!(matches!(response, RegResponse::HandlerError));
@@ -75,12 +75,12 @@ async fn try_insert_no_receiver() {
 #[tokio::test]
 async fn try_insert_no_reply() {
     let (user_tx, mut user_rx) = mpsc::channel(1);
-    let mut caller = pin!(try_insert("éé", "fixture-hash", user_tx));
+    let mut caller = pin!(try_insert("éé", "fixture-password", user_tx));
     assert!(poll!(caller.as_mut()).is_pending());
 
     let request = receive_registration(&mut user_rx);
     assert_eq!(request.username(), "éé");
-    assert_eq!(request.hashed_password(), "fixture-hash");
+    assert_eq!(request.password(), "fixture-password");
     drop(request);
 
     let response = timeout(TEST_TIMEOUT, caller)
@@ -96,7 +96,7 @@ async fn try_insert_no_reply() {
 async fn try_insert_full() {
     let (user_tx, mut user_rx) = mpsc::channel(1);
     fill_request_queue(&user_tx);
-    let mut caller = pin!(try_insert("éé", "fixture-hash", user_tx));
+    let mut caller = pin!(try_insert("éé", "fixture-password", user_tx));
     assert!(
         poll!(caller.as_mut()).is_pending(),
         "send waits while the queue is full"
@@ -104,7 +104,7 @@ async fn try_insert_full() {
 
     let filler = receive_registration(&mut user_rx);
     assert_eq!(filler.username(), "occupied");
-    assert_eq!(filler.hashed_password(), "fixture-hash");
+    assert_eq!(filler.password(), "fixture-password");
     assert!(
         poll!(caller.as_mut()).is_pending(),
         "caller waits for the tested reply"
@@ -112,7 +112,7 @@ async fn try_insert_full() {
 
     let request = receive_registration(&mut user_rx);
     assert_eq!(request.username(), "éé");
-    assert_eq!(request.hashed_password(), "fixture-hash");
+    assert_eq!(request.password(), "fixture-password");
     assert_no_queued_request(&mut user_rx);
     assert!(request.try_send(RegResponse::Success(u16::MAX)).is_ok());
 
@@ -129,11 +129,11 @@ async fn try_insert_full() {
 #[tokio::test]
 async fn try_insert_username_exists() {
     let (user_tx, mut user_rx) = mpsc::channel(1);
-    let mut caller = pin!(try_insert("éé", "fixture-hash", user_tx));
+    let mut caller = pin!(try_insert("éé", "fixture-password", user_tx));
     assert!(poll!(caller.as_mut()).is_pending());
     let request = receive_registration(&mut user_rx);
     assert_eq!(request.username(), "éé");
-    assert_eq!(request.hashed_password(), "fixture-hash");
+    assert_eq!(request.password(), "fixture-password");
     assert!(request.try_send(RegResponse::UsernameExists).is_ok());
 
     let response = timeout(TEST_TIMEOUT, caller)
@@ -148,11 +148,11 @@ async fn try_insert_username_exists() {
 #[tokio::test]
 async fn try_insert_no_space() {
     let (user_tx, mut user_rx) = mpsc::channel(1);
-    let mut caller = pin!(try_insert("éé", "fixture-hash", user_tx));
+    let mut caller = pin!(try_insert("éé", "fixture-password", user_tx));
     assert!(poll!(caller.as_mut()).is_pending());
     let request = receive_registration(&mut user_rx);
     assert_eq!(request.username(), "éé");
-    assert_eq!(request.hashed_password(), "fixture-hash");
+    assert_eq!(request.password(), "fixture-password");
     assert!(request.try_send(RegResponse::NotEnoughSpace).is_ok());
 
     let response = timeout(TEST_TIMEOUT, caller)
@@ -167,11 +167,11 @@ async fn try_insert_no_space() {
 #[tokio::test]
 async fn try_insert_handler_error() {
     let (user_tx, mut user_rx) = mpsc::channel(1);
-    let mut caller = pin!(try_insert("éé", "fixture-hash", user_tx));
+    let mut caller = pin!(try_insert("éé", "fixture-password", user_tx));
     assert!(poll!(caller.as_mut()).is_pending());
     let request = receive_registration(&mut user_rx);
     assert_eq!(request.username(), "éé");
-    assert_eq!(request.hashed_password(), "fixture-hash");
+    assert_eq!(request.password(), "fixture-password");
     assert!(request.try_send(RegResponse::HandlerError).is_ok());
 
     let response = timeout(TEST_TIMEOUT, caller)

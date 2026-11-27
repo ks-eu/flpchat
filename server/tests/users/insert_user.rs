@@ -1,9 +1,14 @@
-use tokio::sync::mpsc;
+use std::{sync::Arc, time::Duration};
 
-use crate::database::serial_tests::postgres_test;
+use tokio::{
+    sync::{Semaphore, mpsc, oneshot},
+    time::{sleep, timeout},
+};
 
-use super::transaction_pool::transaction_pool;
-use super::{PgPool, RegResponse, UserHandler};
+use crate::database::{hash::verify_password, serial_tests::postgres_test};
+use crate::users::registration::RegRequest;
+
+use super::{PgPool, RegResponse, UserHandler, UserRequest};
 
 async fn set_available_ids(pool: &PgPool, ids: &[i32]) -> sqlx::Result<()> {
     sqlx::query("DELETE FROM available_user_ids WHERE NOT (user_id = ANY($1))")
@@ -35,8 +40,32 @@ async fn seed_account(pool: &PgPool, id: i32, username: &str, hash: &str) -> sql
     Ok(())
 }
 
+fn open_permit() -> Arc<Semaphore> {
+    Arc::new(Semaphore::new(1))
+}
+
+fn closed_permit() -> Arc<Semaphore> {
+    let permit = open_permit();
+    permit.close();
+    permit
+}
+
 fn handler(pool: &PgPool) -> UserHandler {
     UserHandler::new(pool.clone(), mpsc::channel(1).1)
+}
+
+async fn insert(
+    handler: &UserHandler,
+    username: &str,
+    password: &str,
+    permit: Arc<Semaphore>,
+) -> RegResponse {
+    let (reply_tx, reply_rx) = oneshot::channel();
+    let request = RegRequest::new(username.into(), password.into(), reply_tx);
+    handler.insert_user(request, permit).await;
+    reply_rx
+        .await
+        .expect("insert_user should send one response")
 }
 
 async fn available_ids(pool: &PgPool) -> sqlx::Result<Vec<i32>> {
@@ -46,15 +75,14 @@ async fn available_ids(pool: &PgPool) -> sqlx::Result<Vec<i32>> {
 }
 
 // Alias: Inserts account and profile
-// Input: IDs=[7,42], insert_user("new-user", "fixture-hash")
-// Expected: Success(7). Account 7 stores the exact username and hash; matching profile has admin_status=false, a creation timestamp and last_online=NULL. Remaining IDs=[42].
+// Input: IDs=[7,42], insert_user("new-user", "fixture-password")
+// Expected: Success(7). Account 7 stores the exact username and a hash that verifies the submitted password; matching profile has admin_status=false, a creation timestamp and last_online=NULL. Remaining IDs=[42].
 postgres_test! {
     async fn insert_new(pool: PgPool) -> sqlx::Result<()> {
-        let pool = transaction_pool(&pool).await?;
         set_available_ids(&pool, &[7, 42]).await?;
 
         assert!(matches!(
-            handler(&pool).insert_user("new-user", "fixture-hash").await,
+            insert(&handler(&pool), "new-user", "fixture-password", open_permit()).await,
             RegResponse::Success(7)
         ));
         let account = sqlx::query_as::<_, (i32, String, String)>(
@@ -62,7 +90,9 @@ postgres_test! {
         )
         .fetch_one(&pool)
         .await?;
-        assert_eq!(account, (7, "new-user".into(), "fixture-hash".into()));
+        assert_eq!(account.0, 7);
+        assert_eq!(account.1, "new-user");
+        assert_eq!(verify_password("fixture-password", &account.2), Ok(true));
 
         let profile = sqlx::query_as::<_, (i32, String, bool, bool, bool)>(
             "SELECT user_id, username, admin_status,
@@ -74,17 +104,15 @@ postgres_test! {
         assert_eq!(profile, (7, "new-user".into(), false, true, true));
         assert_eq!(available_ids(&pool).await?, [42]);
 
-        sqlx::query("ROLLBACK").execute(&pool).await?;
         Ok(())
     }
 }
 
 // Alias: Preserves the existing account and ID pool
-// Input: account(7, "taken", "old-hash"), IDs=[8]; profile admin=true, created 2026-01-01T00:00:00Z, last_online 2026-01-02T00:00:00Z; insert_user("taken", "different-hash")
+// Input: account(7, "taken", "old-hash"), IDs=[8]; profile admin=true, created 2026-01-01T00:00:00Z, last_online 2026-01-02T00:00:00Z; insert_user("taken", "different-password") with a closed semaphore
 // Expected: UsernameExists. Account hash, all seeded profile fields, and IDs=[8] remain unchanged.
 postgres_test! {
     async fn insert_duplicate(pool: PgPool) -> sqlx::Result<()> {
-        let pool = transaction_pool(&pool).await?;
         set_available_ids(&pool, &[8]).await?;
         seed_account(&pool, 7, "taken", "old-hash").await?;
         sqlx::query(
@@ -98,7 +126,7 @@ postgres_test! {
         .await?;
 
         assert!(matches!(
-            handler(&pool).insert_user("taken", "different-hash").await,
+            insert(&handler(&pool), "taken", "different-password", closed_permit()).await,
             RegResponse::UsernameExists
         ));
         let account = sqlx::query_as::<_, (i32, String, String)>(
@@ -118,22 +146,20 @@ postgres_test! {
         assert_eq!(profile, [(7, "taken".into(), true, Some(true), Some(true))]);
         assert_eq!(available_ids(&pool).await?, [8]);
 
-        sqlx::query("ROLLBACK").execute(&pool).await?;
         Ok(())
     }
 }
 
 // Alias: Detects duplicate before capacity
-// Input: account(7, "taken", "old-hash"), IDs=[], insert_user("taken", "different-hash")
+// Input: account(7, "taken", "old-hash"), IDs=[], insert_user("taken", "different-password") with a closed semaphore
 // Expected: UsernameExists and no writes.
 postgres_test! {
     async fn insert_duplicate_full(pool: PgPool) -> sqlx::Result<()> {
-        let pool = transaction_pool(&pool).await?;
         set_available_ids(&pool, &[]).await?;
         seed_account(&pool, 7, "taken", "old-hash").await?;
 
         assert!(matches!(
-            handler(&pool).insert_user("taken", "different-hash").await,
+            insert(&handler(&pool), "taken", "different-password", closed_permit()).await,
             RegResponse::UsernameExists
         ));
         let account = sqlx::query_as::<_, (i32, String, String)>(
@@ -152,21 +178,19 @@ postgres_test! {
         assert_eq!(profile, [(7, "taken".into(), false, true, true)]);
         assert!(available_ids(&pool).await?.is_empty());
 
-        sqlx::query("ROLLBACK").execute(&pool).await?;
         Ok(())
     }
 }
 
 // Alias: Claims the last usable ID
-// Input: IDs=[65535], insert_user("last-user", "fixture-hash")
+// Input: IDs=[65535], insert_user("last-user", "fixture-password")
 // Expected: Success(65535); matching account and profile exist and IDs=[].
 postgres_test! {
     async fn insert_max_id(pool: PgPool) -> sqlx::Result<()> {
-        let pool = transaction_pool(&pool).await?;
         set_available_ids(&pool, &[65535]).await?;
 
         assert!(matches!(
-            handler(&pool).insert_user("last-user", "fixture-hash").await,
+            insert(&handler(&pool), "last-user", "fixture-password", open_permit()).await,
             RegResponse::Success(65535)
         ));
         let account = sqlx::query_as::<_, (i32, String, String)>(
@@ -174,7 +198,9 @@ postgres_test! {
         )
         .fetch_one(&pool)
         .await?;
-        assert_eq!(account, (65535, "last-user".into(), "fixture-hash".into()));
+        assert_eq!(account.0, 65535);
+        assert_eq!(account.1, "last-user");
+        assert_eq!(verify_password("fixture-password", &account.2), Ok(true));
         let profile = sqlx::query_as::<_, (i32, String, bool, bool, bool)>(
             "SELECT user_id, username, admin_status,
                     user_created IS NOT NULL, last_online IS NULL
@@ -185,21 +211,19 @@ postgres_test! {
         assert_eq!(profile, (65535, "last-user".into(), false, true, true));
         assert!(available_ids(&pool).await?.is_empty());
 
-        sqlx::query("ROLLBACK").execute(&pool).await?;
         Ok(())
     }
 }
 
 // Alias: Creates no rows when IDs are exhausted
-// Input: IDs=[], insert_user("new-user", "fixture-hash")
+// Input: IDs=[], closed semaphore, insert_user("new-user", "fixture-password")
 // Expected: NotEnoughSpace; no account or profile row for "new-user".
 postgres_test! {
     async fn insert_full(pool: PgPool) -> sqlx::Result<()> {
-        let pool = transaction_pool(&pool).await?;
         set_available_ids(&pool, &[]).await?;
 
         assert!(matches!(
-            handler(&pool).insert_user("new-user", "fixture-hash").await,
+            insert(&handler(&pool), "new-user", "fixture-password", closed_permit()).await,
             RegResponse::NotEnoughSpace
         ));
         assert!(sqlx::query_scalar::<_, bool>(
@@ -210,21 +234,19 @@ postgres_test! {
         .await?);
         assert!(available_ids(&pool).await?.is_empty());
 
-        sqlx::query("ROLLBACK").execute(&pool).await?;
         Ok(())
     }
 }
 
 // Alias: Chooses the lowest available ID
-// Input: IDs=[7,42,101], insert_user("new-user", "fixture-hash")
+// Input: IDs=[7,42,101], insert_user("new-user", "fixture-password")
 // Expected: Success(7); remaining IDs=[42,101].
 postgres_test! {
     async fn insert_lowest(pool: PgPool) -> sqlx::Result<()> {
-        let pool = transaction_pool(&pool).await?;
         set_available_ids(&pool, &[7, 42, 101]).await?;
 
         assert!(matches!(
-            handler(&pool).insert_user("new-user", "fixture-hash").await,
+            insert(&handler(&pool), "new-user", "fixture-password", open_permit()).await,
             RegResponse::Success(7)
         ));
         let account = sqlx::query_as::<_, (i32, String, String)>(
@@ -232,16 +254,17 @@ postgres_test! {
         )
         .fetch_one(&pool)
         .await?;
-        assert_eq!(account, (7, "new-user".into(), "fixture-hash".into()));
+        assert_eq!(account.0, 7);
+        assert_eq!(account.1, "new-user");
+        assert_eq!(verify_password("fixture-password", &account.2), Ok(true));
         assert_eq!(available_ids(&pool).await?, [42, 101]);
 
-        sqlx::query("ROLLBACK").execute(&pool).await?;
         Ok(())
     }
 }
 
 // Alias: Rolls back when profile insertion fails
-// Input: IDs=[7], constraint rejects profile username "blocked", insert_user("blocked", "fixture-hash")
+// Input: IDs=[7], constraint rejects profile username "blocked", insert_user("blocked", "fixture-password")
 // Expected: HandlerError. Neither row survives and ID 7 remains available.
 postgres_test! {
     async fn insert_profile_error(pool: PgPool) -> sqlx::Result<()> {
@@ -253,8 +276,7 @@ postgres_test! {
         .execute(&pool)
         .await?;
 
-        let response = handler(&pool)
-            .insert_user("blocked", "fixture-hash")
+        let response = insert(&handler(&pool), "blocked", "fixture-password", open_permit())
             .await;
         assert!(matches!(response, RegResponse::HandlerError));
 
@@ -267,5 +289,136 @@ postgres_test! {
         assert_eq!(available_ids(&pool).await?, [7]);
 
         Ok(())
+    }
+}
+
+const CLAIM_TIMEOUT: Duration = Duration::from_secs(5);
+
+async fn wait_for_claim(pool: &PgPool) -> sqlx::Result<()> {
+    timeout(CLAIM_TIMEOUT, async {
+        loop {
+            match sqlx::query(
+                "SELECT user_id FROM available_user_ids WHERE user_id = 7 FOR UPDATE NOWAIT",
+            )
+            .fetch_one(pool)
+            .await
+            {
+                Err(sqlx::Error::Database(error)) if error.code().as_deref() == Some("55P03") => {
+                    return Ok(());
+                }
+                result => {
+                    result?;
+                }
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("registration should claim ID 7 before hashing")
+}
+
+postgres_test! {
+    async fn insert_hash_failure_reuses_id(pool: PgPool) -> sqlx::Result<()> {
+        set_available_ids(&pool, &[7]).await?;
+        let handler = handler(&pool);
+        assert!(matches!(
+            insert(&handler, "same", "first", closed_permit()).await,
+            RegResponse::HandlerError
+        ));
+        assert_eq!(available_ids(&pool).await?, [7]);
+        assert!(matches!(
+            insert(&handler, "same", "second", open_permit()).await,
+            RegResponse::Success(7)
+        ));
+        let hash: String = sqlx::query_scalar("SELECT password_hash FROM users WHERE username = 'same'")
+            .fetch_one(&pool).await?;
+        assert_eq!(verify_password("second", &hash), Ok(true));
+        Ok(())
+    }
+}
+
+postgres_test! {
+    async fn insert_cancelled_worker_reuses_id(pool: PgPool) -> sqlx::Result<()> {
+        set_available_ids(&pool, &[7]).await?;
+        let (user_tx, user_rx) = mpsc::channel(1);
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let worker = tokio::spawn(
+            UserHandler::new(pool.clone(), user_rx).run(Arc::new(Semaphore::new(0))),
+        );
+        assert!(user_tx.try_send(UserRequest::RegRequest(
+            RegRequest::new("same".into(), "first".into(), reply_tx),
+        )).is_ok());
+        wait_for_claim(&pool).await?;
+        worker.abort();
+        assert!(worker.await.unwrap_err().is_cancelled());
+        assert!(reply_rx.await.is_err());
+
+        let response = timeout(
+            CLAIM_TIMEOUT,
+            insert(&handler(&pool), "same", "second", open_permit()),
+        ).await.expect("retry should acquire the released ID");
+        assert!(matches!(response, RegResponse::Success(7)));
+        let hash: String = sqlx::query_scalar("SELECT password_hash FROM users WHERE username = 'same'")
+            .fetch_one(&pool).await?;
+        assert_eq!(verify_password("second", &hash), Ok(true));
+        Ok(())
+    }
+}
+
+async fn assert_concurrent_duplicate(pool: &PgPool, ids: &[i32]) -> sqlx::Result<()> {
+    set_available_ids(pool, ids).await?;
+    let permit = open_permit();
+    let held = Arc::clone(&permit).acquire_owned().await.unwrap();
+    let first = handler(pool);
+    let first = tokio::spawn(async move { insert(&first, "same", "first", permit).await });
+    wait_for_claim(pool).await?;
+
+    let second = handler(pool);
+    let second =
+        tokio::spawn(async move { insert(&second, "same", "second", closed_permit()).await });
+    timeout(CLAIM_TIMEOUT, async {
+        loop {
+            let blocked: bool = sqlx::query_scalar(
+                "SELECT EXISTS (
+                    SELECT 1 FROM pg_locks
+                    WHERE locktype = 'advisory' AND NOT granted
+                      AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+                )",
+            )
+            .fetch_one(pool)
+            .await?;
+            if blocked {
+                return Ok::<_, sqlx::Error>(());
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("second registration should wait for the username lock")?;
+    drop(held);
+
+    let (first, second) = timeout(CLAIM_TIMEOUT, async { tokio::join!(first, second) })
+        .await
+        .expect("both registrations should finish");
+    assert!(matches!(first.unwrap(), RegResponse::Success(7)));
+    assert!(matches!(second.unwrap(), RegResponse::UsernameExists));
+    assert_eq!(available_ids(pool).await?, &ids[1..]);
+    let hash: String =
+        sqlx::query_scalar("SELECT password_hash FROM users WHERE username = 'same'")
+            .fetch_one(pool)
+            .await?;
+    assert_eq!(verify_password("first", &hash), Ok(true));
+    Ok(())
+}
+
+postgres_test! {
+    async fn insert_concurrent_duplicate_last_id(pool: PgPool) -> sqlx::Result<()> {
+        assert_concurrent_duplicate(&pool, &[7]).await
+    }
+}
+
+postgres_test! {
+    async fn insert_concurrent_duplicate_spare_id(pool: PgPool) -> sqlx::Result<()> {
+        assert_concurrent_duplicate(&pool, &[7, 8]).await
     }
 }
