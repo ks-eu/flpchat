@@ -46,6 +46,17 @@ impl UserHandler {
                 UserRequest::RemoveSelfRequest(request) => {
                     self.removeself_user(request, Arc::clone(&permit)).await;
                 }
+                UserRequest::LoginRequest(request) => {
+                    let response = match self.verify_credentials(
+                        request.username(),
+                        request.password(),
+                        Arc::clone(&permit),
+                    ).await {
+                        Ok(VerifyResult::Success(_)) => todo!(),
+                        _ => todo!(),
+                    };
+                }
+
                 _ => continue,
             }
         }
