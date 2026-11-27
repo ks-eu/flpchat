@@ -5,11 +5,13 @@ use sqlx::PgPool;
 use tokio::sync::{mpsc, Semaphore};
 use crate::users::registration::{RegRequest, RegResponse};
 use crate::users::remove::{RemoveSelfRequest, RemoveSelfResponse};
+use crate::users::login::{LoginRequest, LoginResponse};
 use crate::hashing::verify_password;
 
 pub enum UserRequest {
     RegRequest(RegRequest),
     RemoveSelfRequest(RemoveSelfRequest),
+    LoginRequest(LoginRequest),
 }
 
 enum VerifyResult {
@@ -71,6 +73,7 @@ impl UserHandler {
                         ).await;
                     let _ = request.try_send(response);
                 }
+                _ => continue,
             }
         }
     }
