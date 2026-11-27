@@ -66,28 +66,38 @@ pub async fn handle_login(
     sink: FlpcSink,
     max_len_username: usize,
     max_len_password: usize,
-) {
-    let code = if invalid_credential_lengths(
+) -> Option<(u16, FlpcSink)> {
+    if invalid_credential_lengths(
         request.username(),
         request.password(),
         max_len_username,
         max_len_password,
     ) {
-        2
+        let _ = send_serverlogin(2, sink);
+        None
     } else {
         match try_verify(
             request.username(),
             request.password(),
             user_tx,
         ).await {
-            LoginResponse::Success(_) => 0,
-            LoginResponse::WrongCredentials => 1,
-            LoginResponse::UserNotFound => 3,
-            LoginResponse::HandlerError => 4,
+            LoginResponse::Success(id) => Some((id, sink)),
+            LoginResponse::WrongCredentials => {
+                let _ = send_serverlogin(1, sink);
+                None
+            }
+            LoginResponse::UserNotFound => {
+                let _ = send_serverlogin(3, sink);
+                None
+            }
+            LoginResponse::HandlerError => {
+                let _ = send_serverlogin(4, sink);
+                None
+            }
         }
-    };
+    }
 
-    let _ = send_serverlogin(code, sink);
+    
 }
 
 async fn try_verify(
