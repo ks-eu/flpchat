@@ -1,14 +1,12 @@
-use std::{future::Future, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
-use argon2::{
-    Argon2,
-    password_hash::{PasswordVerifier, phc::PasswordHash},
-};
+use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use flpc::{
     tokio::FlpcCodec,
     unit::{FlpcUnit, Register, ServerUnit},
 };
 use futures_util::StreamExt;
+use sqlx::{PgPool, postgres::PgPoolOptions, types::JsonValue};
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::{Semaphore, mpsc},
@@ -16,20 +14,74 @@ use tokio::{
 };
 use tokio_util::codec::Framed;
 
-use super::{RegRequest, RegResponse, handle_register};
-use crate::database::users::UserRequest;
+use crate::database::{serial_tests::postgres_test, users::UserHandler};
 
-const SERVER_TOKEN: &str = "server-token";
+use super::handle_register;
+
+const SERVER_TOKEN: &str = "token";
 const MAX_USERNAME_BYTES: usize = 4;
 const MAX_PASSWORD_BYTES: usize = 6;
+const TEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+#[derive(Debug, PartialEq)]
+struct RegistrationSnapshot {
+    users: Vec<JsonValue>,
+    profiles: Vec<JsonValue>,
+    available_ids: Vec<i32>,
+}
+
+async fn set_available_ids(pool: &PgPool, ids: &[i32]) -> sqlx::Result<()> {
+    sqlx::query("DELETE FROM available_user_ids WHERE NOT (user_id = ANY($1))")
+        .bind(ids)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+async fn seed_existing_user(pool: &PgPool) -> sqlx::Result<()> {
+    sqlx::query("DELETE FROM available_user_ids WHERE user_id = 7")
+        .execute(pool)
+        .await?;
+    sqlx::query(
+        "INSERT INTO users (user_id, username, password_hash)
+         OVERRIDING SYSTEM VALUE VALUES (7, 'user', 'old-hash')",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query("INSERT INTO user_information (user_id, username) VALUES (7, 'user')")
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+async fn snapshot(pool: &PgPool) -> sqlx::Result<RegistrationSnapshot> {
+    Ok(RegistrationSnapshot {
+        users: sqlx::query_scalar(
+            "SELECT to_jsonb(record) FROM (SELECT * FROM users ORDER BY user_id) AS record",
+        )
+        .fetch_all(pool)
+        .await?,
+        profiles: sqlx::query_scalar(
+            "SELECT to_jsonb(record) FROM (
+                 SELECT * FROM user_information ORDER BY user_id
+             ) AS record",
+        )
+        .fetch_all(pool)
+        .await?,
+        available_ids: sqlx::query_scalar(
+            "SELECT user_id FROM available_user_ids ORDER BY user_id",
+        )
+        .fetch_all(pool)
+        .await?,
+    })
+}
 
 async fn registration_outcome(
+    worker_pool: PgPool,
     request: Register,
-    user_tx: mpsc::Sender<UserRequest>,
     hash_permit: Arc<Semaphore>,
-    worker: impl Future<Output = ()>,
 ) -> u8 {
-    timeout(Duration::from_secs(5), async {
+    timeout(TEST_TIMEOUT, async {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let peer = TcpStream::connect(listener.local_addr().unwrap())
             .await
@@ -37,177 +89,265 @@ async fn registration_outcome(
         let (server, _) = listener.accept().await.unwrap();
         let (sink, _) = Framed::new(server, FlpcCodec).split();
         let mut peer = Framed::new(peer, FlpcCodec);
+        let (user_tx, user_rx) = mpsc::channel(1);
+        let worker =
+            tokio::spawn(UserHandler::new(worker_pool, user_rx, Arc::clone(&hash_permit)).run());
         let handler = handle_register(
             request,
-            user_tx,
+            user_tx.clone(),
             hash_permit,
             sink,
-            SERVER_TOKEN.into(),
+            SERVER_TOKEN,
             MAX_USERNAME_BYTES,
             MAX_PASSWORD_BYTES,
         );
-        tokio::join!(handler, worker);
-
-        let frame = peer
-            .next()
-            .await
-            .expect("server should send a registration frame")
+        let (_, frame) = tokio::join!(handler, peer.next());
+        let frame = frame
+            .expect("server should send one registration frame")
             .expect("peer should decode the registration frame");
         let FlpcUnit::Server(ServerUnit::ServerRegister(response)) = frame else {
             panic!("expected ServerRegister, got {frame:?}");
         };
+        assert!(
+            peer.next().await.is_none(),
+            "expected exactly one response frame"
+        );
+        drop(user_tx);
+        timeout(TEST_TIMEOUT, worker)
+            .await
+            .expect("worker should exit after the request sender closes")
+            .expect("worker should join");
         *response.outcome()
     })
     .await
-    .expect("registration exchange should complete")
+    .expect("registration exchange should finish within the timeout")
 }
 
-async fn receive_registration(user_rx: &mut mpsc::Receiver<UserRequest>) -> Option<RegRequest> {
-    while let Some(request) = user_rx.recv().await {
-        if let UserRequest::RegRequest(request) = request {
-            return Some(request);
-        }
-    }
-    None
-}
-
-fn assert_credentials(request: &RegRequest, username: &str, password: &str) {
-    assert_eq!(request.username(), username);
-    let hash =
-        PasswordHash::new(request.hashed_password()).expect("worker should receive a PHC hash");
-    Argon2::default()
-        .verify_password(password.as_bytes(), &hash)
-        .expect("hash should verify against the submitted password");
-}
-
-#[tokio::test]
-async fn handle_register_encodes_worker_outcomes() {
-    let cases = [
-        (RegResponse::Success(42), 0),
-        (RegResponse::NotEnoughSpace, 3),
-        (RegResponse::UsernameExists, 4),
-        (RegResponse::HandlerError, 5),
-    ];
-
-    for (response, expected_code) in cases {
-        let (user_tx, mut user_rx) = mpsc::channel(1);
-        let (username, password) = ("Zoë", "pāss");
-        let request = Register::new(SERVER_TOKEN.into(), username.into(), password.into());
-        let code = registration_outcome(request, user_tx, Arc::new(Semaphore::new(1)), async {
-            let request = receive_registration(&mut user_rx)
-                .await
-                .expect("worker should receive a registration request");
-            if expected_code == 0 {
-                assert_credentials(&request, username, password);
-            }
-            assert!(request.try_send(response).is_ok());
-        })
+// Alias: Registers at both byte limits
+// Input: ("token", "éé", "🔑é")
+// Expected: Code 0. Account 7 and profile exist, and its stored hash verifies "🔑é".
+postgres_test! {
+    async fn register_ok(pool: PgPool) -> sqlx::Result<()> {
+        set_available_ids(&pool, &[7, 8]).await?;
+        let code = registration_outcome(
+            pool.clone(),
+            Register::new(SERVER_TOKEN.into(), "éé".into(), "🔑é".into()),
+            Arc::new(Semaphore::new(1)),
+        )
         .await;
 
-        assert_eq!(code, expected_code);
-    }
-}
-
-#[tokio::test]
-async fn handle_register_validates_token_before_length_and_length_before_hashing() {
-    // (scenario, token, username, password, closed semaphore, wire code)
-    let cases = [
-        ("wrong token", "wrong", "user", "valid", false, 1),
-        ("overlong username", SERVER_TOKEN, "ééx", "valid", false, 2),
-        ("overlong password", SERVER_TOKEN, "user", "éééx", false, 2),
-        ("token before length", "wrong", "ééx", "valid", false, 1),
-        (
-            "length before hashing",
-            SERVER_TOKEN,
-            "user",
-            "éééx",
-            true,
-            2,
-        ),
-    ];
-
-    for (scenario, token, username, password, semaphore_closed, expected_code) in cases {
-        let (user_tx, mut user_rx) = mpsc::channel(1);
-        let permit = Arc::new(Semaphore::new(1));
-        if semaphore_closed {
-            permit.close();
-        }
-        let request = Register::new(token.into(), username.into(), password.into());
-        let code = registration_outcome(request, user_tx, permit, async {
-            assert!(
-                user_rx.recv().await.is_none(),
-                "{scenario} reached the worker"
-            );
-        })
-        .await;
-
-        assert_eq!(code, expected_code, "{scenario}");
-    }
-}
-
-#[tokio::test]
-async fn handle_register_reports_a_closed_hashing_semaphore() {
-    let (user_tx, mut user_rx) = mpsc::channel(1);
-    let permit = Arc::new(Semaphore::new(1));
-    permit.close();
-    let request = Register::new(SERVER_TOKEN.into(), "user".into(), "valid".into());
-    let code = registration_outcome(request, user_tx, permit, async {
-        assert!(
-            user_rx.recv().await.is_none(),
-            "hashing failure reached the worker"
-        );
-    })
-    .await;
-
-    assert_eq!(code, 5);
-}
-
-#[tokio::test]
-async fn handle_register_reports_worker_disconnects() {
-    let request = Register::new(SERVER_TOKEN.into(), "user".into(), "valid".into());
-    let permit = Arc::new(Semaphore::new(1));
-
-    let (user_tx, user_rx) = mpsc::channel(1);
-    drop(user_rx);
-    let code = registration_outcome(request.clone(), user_tx, Arc::clone(&permit), async {}).await;
-    assert_eq!(code, 5, "worker request receiver dropped");
-
-    let (user_tx, mut user_rx) = mpsc::channel(1);
-    let code = registration_outcome(request, user_tx, permit, async {
-        drop(
-            receive_registration(&mut user_rx)
-                .await
-                .expect("worker should receive a registration request"),
-        );
-    })
-    .await;
-    assert_eq!(code, 5, "worker reply sender dropped");
-}
-
-#[tokio::test]
-async fn handle_register_rejects_empty_credentials() {
-    let cases = [
-        ("empty username", "", "valid"),
-        ("empty password", "user", ""),
-        ("empty username and password", "", ""),
-    ];
-
-    for (scenario, username, password) in cases {
-        let (user_tx, mut user_rx) = mpsc::channel(1);
-        let mut reached_worker = false;
-        let request = Register::new(SERVER_TOKEN.into(), username.into(), password.into());
-        let code = registration_outcome(request, user_tx, Arc::new(Semaphore::new(1)), async {
-            if let Some(request) = receive_registration(&mut user_rx).await {
-                reached_worker = true;
-                assert!(request.try_send(RegResponse::Success(1)).is_ok());
-            }
-        })
-        .await;
-
+        assert_eq!(code, 0);
+        let (user_id, hash) = sqlx::query_as::<_, (i32, String)>(
+            "SELECT user_id, password_hash FROM users WHERE username = 'éé'",
+        )
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(user_id, 7);
+        let parsed_hash = PasswordHash::new(&hash).expect("stored hash should be valid PHC");
+        Argon2::default()
+            .verify_password("🔑é".as_bytes(), &parsed_hash)
+            .expect("stored hash should verify the submitted password");
         assert_eq!(
-            (code, reached_worker),
-            (2, false),
-            "{scenario}: expected code 2 and no worker request"
+            sqlx::query_scalar::<_, i32>(
+                "SELECT user_id FROM user_information WHERE username = 'éé'",
+            )
+            .fetch_one(&pool)
+            .await?,
+            7
         );
+        assert_eq!(
+            sqlx::query_scalar::<_, i32>("SELECT user_id FROM available_user_ids ORDER BY user_id")
+                .fetch_all(&pool)
+                .await?,
+            [8]
+        );
+        Ok(())
+    }
+}
+
+// Alias: Checks token before lengths
+// Input: ("wrong", "", "")
+// Expected: Code 1. Account, profile, and available IDs remain unchanged.
+postgres_test! {
+    async fn register_token(pool: PgPool) -> sqlx::Result<()> {
+        set_available_ids(&pool, &[7, 8]).await?;
+        let before = snapshot(&pool).await?;
+        let code = registration_outcome(
+            pool.clone(),
+            Register::new("wrong".into(), "".into(), "".into()),
+            Arc::new(Semaphore::new(1)),
+        )
+        .await;
+
+        assert_eq!(code, 1);
+        assert_eq!(snapshot(&pool).await?, before);
+        Ok(())
+    }
+}
+
+// Alias: Rejects an empty username
+// Input: ("token", "", "secret")
+// Expected: Code 2. Account, profile, and available IDs remain unchanged.
+postgres_test! {
+    async fn register_empty_user(pool: PgPool) -> sqlx::Result<()> {
+        set_available_ids(&pool, &[7, 8]).await?;
+        let before = snapshot(&pool).await?;
+        let code = registration_outcome(
+            pool.clone(),
+            Register::new(SERVER_TOKEN.into(), "".into(), "secret".into()),
+            Arc::new(Semaphore::new(1)),
+        )
+        .await;
+
+        assert_eq!(code, 2);
+        assert_eq!(snapshot(&pool).await?, before);
+        Ok(())
+    }
+}
+
+// Alias: Rejects an empty password
+// Input: ("token", "user", "")
+// Expected: Code 2. Account, profile, and available IDs remain unchanged.
+postgres_test! {
+    async fn register_empty_password(pool: PgPool) -> sqlx::Result<()> {
+        set_available_ids(&pool, &[7, 8]).await?;
+        let before = snapshot(&pool).await?;
+        let code = registration_outcome(
+            pool.clone(),
+            Register::new(SERVER_TOKEN.into(), "user".into(), "".into()),
+            Arc::new(Semaphore::new(1)),
+        )
+        .await;
+
+        assert_eq!(code, 2);
+        assert_eq!(snapshot(&pool).await?, before);
+        Ok(())
+    }
+}
+
+// Alias: Rejects an over-limit username
+// Input: ("token", "users", "secret")
+// Expected: Code 2. Account, profile, and available IDs remain unchanged.
+postgres_test! {
+    async fn register_long_user(pool: PgPool) -> sqlx::Result<()> {
+        set_available_ids(&pool, &[7, 8]).await?;
+        let before = snapshot(&pool).await?;
+        let code = registration_outcome(
+            pool.clone(),
+            Register::new(SERVER_TOKEN.into(), "users".into(), "secret".into()),
+            Arc::new(Semaphore::new(1)),
+        )
+        .await;
+
+        assert_eq!(code, 2);
+        assert_eq!(snapshot(&pool).await?, before);
+        Ok(())
+    }
+}
+
+// Alias: Rejects an over-limit password
+// Input: ("token", "user", "secrets")
+// Expected: Code 2. Account, profile, and available IDs remain unchanged.
+postgres_test! {
+    async fn register_long_password(pool: PgPool) -> sqlx::Result<()> {
+        set_available_ids(&pool, &[7, 8]).await?;
+        let before = snapshot(&pool).await?;
+        let code = registration_outcome(
+            pool.clone(),
+            Register::new(SERVER_TOKEN.into(), "user".into(), "secrets".into()),
+            Arc::new(Semaphore::new(1)),
+        )
+        .await;
+
+        assert_eq!(code, 2);
+        assert_eq!(snapshot(&pool).await?, before);
+        Ok(())
+    }
+}
+
+// Alias: Reports ID exhaustion
+// Input: IDs=[], ("token", "user", "secret")
+// Expected: Code 3. Account, profile, and available IDs remain unchanged.
+postgres_test! {
+    async fn register_full(pool: PgPool) -> sqlx::Result<()> {
+        set_available_ids(&pool, &[]).await?;
+        let before = snapshot(&pool).await?;
+        let code = registration_outcome(
+            pool.clone(),
+            Register::new(SERVER_TOKEN.into(), "user".into(), "secret".into()),
+            Arc::new(Semaphore::new(1)),
+        )
+        .await;
+
+        assert_eq!(code, 3);
+        assert_eq!(snapshot(&pool).await?, before);
+        Ok(())
+    }
+}
+
+// Alias: Reports an existing username
+// Input: account(7, "user", "old-hash"), ("token", "user", "secret")
+// Expected: Code 4. Original account/hash and profile remain; available IDs remain unchanged.
+postgres_test! {
+    async fn register_duplicate(pool: PgPool) -> sqlx::Result<()> {
+        set_available_ids(&pool, &[8]).await?;
+        seed_existing_user(&pool).await?;
+        let before = snapshot(&pool).await?;
+        let code = registration_outcome(
+            pool.clone(),
+            Register::new(SERVER_TOKEN.into(), "user".into(), "secret".into()),
+            Arc::new(Semaphore::new(1)),
+        )
+        .await;
+
+        assert_eq!(code, 4);
+        assert_eq!(snapshot(&pool).await?, before);
+        Ok(())
+    }
+}
+
+// Alias: Reports unavailable hashing
+// Input: Closed hashing semaphore, ("token", "user", "secret")
+// Expected: Code 5. Account, profile, and available IDs remain unchanged.
+postgres_test! {
+    async fn register_hash_error(pool: PgPool) -> sqlx::Result<()> {
+        set_available_ids(&pool, &[7, 8]).await?;
+        let before = snapshot(&pool).await?;
+        let permit = Arc::new(Semaphore::new(1));
+        permit.close();
+        let code = registration_outcome(
+            pool.clone(),
+            Register::new(SERVER_TOKEN.into(), "user".into(), "secret".into()),
+            permit,
+        )
+        .await;
+
+        assert_eq!(code, 5);
+        assert_eq!(snapshot(&pool).await?, before);
+        Ok(())
+    }
+}
+
+// Alias: Reports a worker database failure
+// Input: Closed worker pool, open hashing semaphore, ("token", "user", "secret")
+// Expected: Code 5. Account, profile, and available IDs remain unchanged.
+postgres_test! {
+    async fn register_worker_error(pool: PgPool) -> sqlx::Result<()> {
+        set_available_ids(&pool, &[7, 8]).await?;
+        let before = snapshot(&pool).await?;
+        let worker_pool = PgPoolOptions::new()
+            .connect_with(pool.connect_options().as_ref().clone())
+            .await?;
+        worker_pool.close().await;
+        let code = registration_outcome(
+            worker_pool,
+            Register::new(SERVER_TOKEN.into(), "user".into(), "secret".into()),
+            Arc::new(Semaphore::new(1)),
+        )
+        .await;
+
+        assert_eq!(code, 5);
+        assert_eq!(snapshot(&pool).await?, before);
+        Ok(())
     }
 }

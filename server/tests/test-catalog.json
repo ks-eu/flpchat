@@ -35,6 +35,10 @@
     "lookup-password": {
       "title": "UserHandler::get_hashed_password",
       "inputs": "&self, username: &str"
+    },
+    "handle-register": {
+      "title": "handle_register",
+      "inputs": "request: Register, user_tx: Sender<UserRequest>, hash_permit: Arc<Semaphore>, sink: FlpcSink, server_token: &str, max_len_username: usize, max_len_password: usize"
     }
   },
   "cases": {
@@ -525,6 +529,86 @@
       "alias": "Returns the pool error",
       "input": "Closed pool, input \"account\"",
       "expected": "Err(sqlx::Error::PoolClosed)."
+    },
+    "users::registration::handle_register_tests::register_ok": {
+      "id": "register-ok",
+      "component": "handle-register",
+      "suite": "regular",
+      "alias": "Registers at both byte limits",
+      "input": "(\"token\", \"éé\", \"🔑é\")",
+      "expected": "Code 0. Account 7 and profile exist, and its stored hash verifies \"🔑é\"."
+    },
+    "users::registration::handle_register_tests::register_token": {
+      "id": "register-token",
+      "component": "handle-register",
+      "suite": "regular",
+      "alias": "Checks token before lengths",
+      "input": "(\"wrong\", \"\", \"\")",
+      "expected": "Code 1. Account, profile, and available IDs remain unchanged."
+    },
+    "users::registration::handle_register_tests::register_empty_user": {
+      "id": "register-empty-user",
+      "component": "handle-register",
+      "suite": "regular",
+      "alias": "Rejects an empty username",
+      "input": "(\"token\", \"\", \"secret\")",
+      "expected": "Code 2. Account, profile, and available IDs remain unchanged."
+    },
+    "users::registration::handle_register_tests::register_empty_password": {
+      "id": "register-empty-password",
+      "component": "handle-register",
+      "suite": "regular",
+      "alias": "Rejects an empty password",
+      "input": "(\"token\", \"user\", \"\")",
+      "expected": "Code 2. Account, profile, and available IDs remain unchanged."
+    },
+    "users::registration::handle_register_tests::register_long_user": {
+      "id": "register-long-user",
+      "component": "handle-register",
+      "suite": "regular",
+      "alias": "Rejects an over-limit username",
+      "input": "(\"token\", \"users\", \"secret\")",
+      "expected": "Code 2. Account, profile, and available IDs remain unchanged."
+    },
+    "users::registration::handle_register_tests::register_long_password": {
+      "id": "register-long-password",
+      "component": "handle-register",
+      "suite": "regular",
+      "alias": "Rejects an over-limit password",
+      "input": "(\"token\", \"user\", \"secrets\")",
+      "expected": "Code 2. Account, profile, and available IDs remain unchanged."
+    },
+    "users::registration::handle_register_tests::register_full": {
+      "id": "register-full",
+      "component": "handle-register",
+      "suite": "regular",
+      "alias": "Reports ID exhaustion",
+      "input": "IDs=[], (\"token\", \"user\", \"secret\")",
+      "expected": "Code 3. Account, profile, and available IDs remain unchanged."
+    },
+    "users::registration::handle_register_tests::register_duplicate": {
+      "id": "register-duplicate",
+      "component": "handle-register",
+      "suite": "regular",
+      "alias": "Reports an existing username",
+      "input": "account(7, \"user\", \"old-hash\"), (\"token\", \"user\", \"secret\")",
+      "expected": "Code 4. Original account/hash and profile remain; available IDs remain unchanged."
+    },
+    "users::registration::handle_register_tests::register_hash_error": {
+      "id": "register-hash-error",
+      "component": "handle-register",
+      "suite": "regular",
+      "alias": "Reports unavailable hashing",
+      "input": "Closed hashing semaphore, (\"token\", \"user\", \"secret\")",
+      "expected": "Code 5. Account, profile, and available IDs remain unchanged."
+    },
+    "users::registration::handle_register_tests::register_worker_error": {
+      "id": "register-worker-error",
+      "component": "handle-register",
+      "suite": "regular",
+      "alias": "Reports a worker database failure",
+      "input": "Closed worker pool, open hashing semaphore, (\"token\", \"user\", \"secret\")",
+      "expected": "Code 5. Account, profile, and available IDs remain unchanged."
     }
   }
 }
