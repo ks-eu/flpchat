@@ -921,6 +921,78 @@
       "alias": "Reports verification failure",
       "input": "account(7, \"user\", H(\"secret\")), closed worker verification semaphore, (\"user\", \"secret\")",
       "expected": "Code 4. Account 7 and its profile remain; ID 7 stays claimed."
+    },
+    "database::users::query_performance_tests::perf_insert_sql": {
+      "id": "perf-insert-sql",
+      "component": "insert-user",
+      "suite": "performance",
+      "alias": "Inserts a new account through insert_user.sql (PostgreSQL Execution Time)",
+      "input": "\"bench-new\", the precomputed timing-password fixture hash, and 1,000 existing accounts",
+      "expected": "(false, Some(1001)); account/profile are inserted and ID 1001 is claimed."
+    },
+    "database::users::query_performance_tests::perf_register_tcp": {
+      "id": "perf-register-tcp",
+      "component": "handle-register",
+      "suite": "performance",
+      "alias": "Registers a new account through the TCP handler",
+      "input": "handle_register(\"token\", \"bench-new\", \"timing-password\", limits 32/64); handler call through decoded TCP reply",
+      "expected": "Peer decodes ServerRegister code 0; account/profile and ID 1001 state are correct."
+    },
+    "database::users::query_performance_tests::perf_lookup_sql": {
+      "id": "perf-lookup-sql",
+      "component": "lookup-password",
+      "suite": "performance",
+      "alias": "Looks up the target account hash (PostgreSQL Execution Time)",
+      "input": "Lookup SQL for \"bench-0001\" in the 1,000-account fixture",
+      "expected": "Exact precomputed timing-password hash; report Execution Time in milliseconds."
+    },
+    "database::users::query_performance_tests::perf_remove_empty_sql": {
+      "id": "perf-remove-empty-sql",
+      "component": "removeself-user",
+      "suite": "performance",
+      "alias": "Removes an account without message history (PostgreSQL Execution Time)",
+      "input": "removeself_user.sql for \"bench-0001\" with the timing-password fixture hash",
+      "expected": "(Some(true), Some(1)); account/profile are removed and ID 1 stays claimed."
+    },
+    "database::users::query_performance_tests::perf_remove_empty_tcp": {
+      "id": "perf-remove-empty-tcp",
+      "component": "handle-removeself",
+      "suite": "performance",
+      "alias": "Removes an account without message history through the TCP handler",
+      "input": "handle_removeself(\"bench-0001\", \"timing-password\", limits 32/64); handler call through decoded TCP reply",
+      "expected": "Peer decodes ServerRemoveSelf code 0; account/profile are removed and ID 1 stays claimed."
+    },
+    "database::users::query_performance_tests::perf_remove_history_sql": {
+      "id": "perf-remove-history-sql",
+      "component": "removeself-user",
+      "suite": "performance",
+      "alias": "Removes an account with message history (PostgreSQL Execution Time)",
+      "input": "removeself_user.sql for \"bench-0001\" with the timing-password fixture hash and full history",
+      "expected": "(Some(true), Some(1)); target messages are removed and unrelated account-2/account-3 rows survive."
+    },
+    "database::users::query_performance_tests::perf_remove_history_tcp": {
+      "id": "perf-remove-history-tcp",
+      "component": "handle-removeself",
+      "suite": "performance",
+      "alias": "Removes an account with message history through the TCP handler",
+      "input": "handle_removeself(\"bench-0001\", \"timing-password\", limits 32/64); handler call through decoded TCP reply",
+      "expected": "Peer decodes code 0; target public/private rows disappear and both unrelated rows survive."
+    },
+    "database::users::query_performance_tests::perf_remove_wrong_sql": {
+      "id": "perf-remove-wrong-sql",
+      "component": "removeself-user",
+      "suite": "performance",
+      "alias": "Preserves an account after wrong credentials (PostgreSQL Execution Time)",
+      "input": "removeself_user.sql for \"bench-0001\" with \"wrong-hash\" and full history",
+      "expected": "(Some(false), None); account/profile/hash, claimed ID, and every target/unrelated message remain."
+    },
+    "database::users::query_performance_tests::perf_verify_credentials": {
+      "id": "perf-verify-credentials",
+      "component": "verify-credentials",
+      "suite": "performance",
+      "alias": "Verifies credentials through UserHandler",
+      "input": "verify_credentials(\"bench-0001\", \"timing-password\") with the precomputed fixture hash",
+      "expected": "Success with the exact hash for the warm-up and all measured calls; report 20 samples in milliseconds."
     }
   }
 }
