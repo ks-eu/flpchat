@@ -2,6 +2,17 @@
 name = "server"
 version = "0.1.0"
 edition = "2024"
+default-run = "server"
+
+[features]
+regremove-stress = []
+
+[[bin]]
+name = "lightchat-regremove-stress"
+path = "stresstest/main.rs"
+required-features = ["regremove-stress"]
+test = false
+bench = false
 
 [dependencies]
 flpc = {git = "https://github.com/ks-eu/flpc", package = "flpc", features = ["tokio"]}
