@@ -34,14 +34,9 @@ const SAMPLE_COUNT: usize = 20;
 const PASSWORD: &str = "timing-password";
 const TOKEN: &str = "token";
 const FIXTURE_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$bGlnaHRjaGF0LWJlbmNobWFyaw$NG0zwI7kM/Cq+dLLB3HMbPwk1I8NW1iSDPpYPr/ImjU";
-const CLAIM_SQL: &str = include_str!("../src/database/queries/claim_user_id.sql");
 const INSERT_SQL: &str = include_str!("../src/database/queries/insert_user.sql");
 const SET_HASH_SQL: &str = include_str!("../src/database/queries/set_password_hash.sql");
 const REMOVE_SQL: &str = include_str!("../src/database/queries/remove_user.sql");
-const EXPLAIN_CLAIM: &str = concat!(
-    "EXPLAIN (ANALYZE, TIMING OFF, FORMAT JSON) ",
-    include_str!("../src/database/queries/claim_user_id.sql")
-);
 const EXPLAIN_INSERT: &str = concat!(
     "EXPLAIN (ANALYZE, TIMING OFF, FORMAT JSON) ",
     include_str!("../src/database/queries/insert_user.sql")
@@ -150,17 +145,11 @@ async fn removed_state(pool: &PgPool) -> sqlx::Result<bool> {
 
 async fn run_sql_insert(pool: &PgPool) -> sqlx::Result<()> {
     savepoint(pool).await?;
-    let result = sqlx::query_as::<_, (bool, Option<i32>)>(CLAIM_SQL)
+    let result = sqlx::query_as::<_, (bool, Option<i32>)>(INSERT_SQL)
         .bind("bench-new")
         .fetch_one(pool)
         .await?;
     assert_eq!(result, (false, Some(50001)));
-    let inserted: i32 = sqlx::query_scalar(INSERT_SQL)
-        .bind(50001_i32)
-        .bind("bench-new")
-        .fetch_one(pool)
-        .await?;
-    assert_eq!(inserted, 50001);
     let updated: i32 = sqlx::query_scalar(SET_HASH_SQL)
         .bind(50001_i32)
         .bind(FIXTURE_HASH)
@@ -173,17 +162,13 @@ async fn run_sql_insert(pool: &PgPool) -> sqlx::Result<()> {
     let mut samples = Vec::with_capacity(SAMPLE_COUNT);
     for run in 0..=SAMPLE_COUNT {
         savepoint(pool).await?;
-        let mut claim_args = PgArguments::default();
-        claim_args.add("bench-new").map_err(sqlx::Error::Encode)?;
-        let claim_ms = plan_ms(pool, EXPLAIN_CLAIM, claim_args).await?;
         let mut args = PgArguments::default();
-        args.add(50001_i32).map_err(sqlx::Error::Encode)?;
         args.add("bench-new").map_err(sqlx::Error::Encode)?;
         let insert_ms = plan_ms(pool, EXPLAIN_INSERT, args).await?;
         let mut hash_args = PgArguments::default();
         hash_args.add(50001_i32).map_err(sqlx::Error::Encode)?;
         hash_args.add(FIXTURE_HASH).map_err(sqlx::Error::Encode)?;
-        let elapsed_ms = claim_ms + insert_ms + plan_ms(pool, EXPLAIN_SET_HASH, hash_args).await?;
+        let elapsed_ms = insert_ms + plan_ms(pool, EXPLAIN_SET_HASH, hash_args).await?;
         assert_eq!(insert_state(pool).await?, FIXTURE_HASH);
         rollback_sample(pool).await?;
         if run > 0 {

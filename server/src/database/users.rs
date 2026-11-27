@@ -56,6 +56,7 @@ impl UserHandler {
     }
 
     async fn insert_user(&self, request: RegRequest, permit: Arc<Semaphore>) {
+        // Hold the provisional account and ID claim in one transaction through hashing.
         let Ok(mut tx) = self.pool.begin_with("BEGIN ISOLATION LEVEL READ COMMITTED").await else {
             let _ = request.try_send(RegResponse::HandlerError);
             return;
@@ -63,26 +64,17 @@ impl UserHandler {
 
         let username = request.username();
         let response = async {
-            let claim = sqlx::query_as::<_, (bool, Option<i32>)>(include_str!(
-                "queries/claim_user_id.sql"
+            // Check the username, claim an ID, and insert the provisional account and profile.
+            let provisional = sqlx::query_as::<_, (bool, Option<i32>)>(include_str!(
+                "queries/insert_user.sql"
             ))
             .bind(username)
             .fetch_one(&mut *tx)
             .await;
-            let user_id = match claim {
+            let user_id = match provisional {
                 Ok((true, _)) => return RegResponse::UsernameExists,
                 Ok((false, None)) => return RegResponse::NotEnoughSpace,
                 Ok((false, Some(user_id))) => user_id,
-                Err(_) => return RegResponse::HandlerError,
-            };
-
-            match sqlx::query_scalar::<_, i32>(include_str!("queries/insert_user.sql"))
-                .bind(user_id)
-                .bind(username)
-                .fetch_one(&mut *tx)
-                .await
-            {
-                Ok(_) => {}
                 Err(sqlx::Error::Database(error))
                     if error.is_unique_violation()
                         && error.constraint() == Some("users_username_key") =>
@@ -90,12 +82,13 @@ impl UserHandler {
                     return RegResponse::UsernameExists;
                 }
                 Err(_) => return RegResponse::HandlerError,
-            }
+            };
 
             let Ok(hash) = hash_password(request.password(), permit).await else {
                 return RegResponse::HandlerError;
             };
 
+            // Replace the provisional marker with the generated password hash.
             match sqlx::query_scalar::<_, i32>(include_str!("queries/set_password_hash.sql"))
                 .bind(user_id)
                 .bind(hash)
@@ -109,6 +102,7 @@ impl UserHandler {
         }
         .await;
 
+        // Commit a complete registration or roll back the account, profile, and ID claim.
         let finished = if matches!(&response, RegResponse::Success(_)) {
             tx.commit().await
         } else {
