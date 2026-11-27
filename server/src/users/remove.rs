@@ -111,11 +111,12 @@ async fn send_serverremoveself(
 
 #[cfg(test)]
 mod tests {
+    use std::pin::pin;
     use std::sync::Arc;
     use std::time::Duration;
 
     use flpc::unit::{Register, ServerUnit};
-    use futures_util::StreamExt;
+    use futures_util::{StreamExt, poll};
     use sqlx::PgPool;
     use tokio::{net::TcpListener, sync::Semaphore, time::timeout};
 
@@ -154,40 +155,172 @@ mod tests {
         request
     }
 
-    #[tokio::test]
-    async fn try_remove_forwards_exact_credentials_and_returns_reply() {
-        timeout(TEST_TIMEOUT, async {
-            let (user_tx, mut user_rx) = mpsc::channel(1);
-            let (response, ()) = tokio::join!(try_remove("éé", "🔑é", user_tx), async {
-                let request = receive_request(&mut user_rx).await;
-                assert_eq!(request.username(), "éé");
-                assert_eq!(request.password(), "🔑é");
-                assert!(request.try_send(RemoveSelfResponse::Success(u16::MAX)).is_ok());
-            });
-            assert!(matches!(response, RemoveSelfResponse::Success(u16::MAX)));
-        })
-        .await
-        .expect("worker exchange should complete");
+    fn try_receive_request(user_rx: &mut mpsc::Receiver<UserRequest>) -> RemoveSelfRequest {
+        let UserRequest::RemoveSelfRequest(request) = user_rx
+            .try_recv()
+            .expect("removal request should be queued")
+        else {
+            panic!("expected a removal request");
+        };
+        request
     }
 
-    #[tokio::test]
-    async fn try_remove_reports_closed_request_and_reply_channels() {
-        timeout(TEST_TIMEOUT, async {
-            let (user_tx, user_rx) = mpsc::channel(1);
-            drop(user_rx);
-            assert!(matches!(
-                try_remove("user", "secret", user_tx).await,
-                RemoveSelfResponse::HandlerError
-            ));
+    fn fill_request_queue(user_tx: &mpsc::Sender<UserRequest>) {
+        let (response_tx, _) = tokio::sync::oneshot::channel();
+        let request = RemoveSelfRequest::new("occupied".into(), "🔑é".into(), response_tx);
+        assert!(user_tx
+            .try_send(UserRequest::RemoveSelfRequest(request))
+            .is_ok());
+    }
 
-            let (user_tx, mut user_rx) = mpsc::channel(1);
-            let (response, ()) = tokio::join!(try_remove("user", "secret", user_tx), async {
-                drop(receive_request(&mut user_rx).await);
-            });
-            assert!(matches!(response, RemoveSelfResponse::HandlerError));
-        })
-        .await
-        .expect("closed channels should resolve");
+    fn assert_no_queued_request(user_rx: &mut mpsc::Receiver<UserRequest>) {
+        assert!(matches!(
+            user_rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty | mpsc::error::TryRecvError::Disconnected)
+        ));
+    }
+
+    // Alias: Forwards the exact request
+    // Input: Receive the helper's message and respond with Success(65535)
+    // Expected: Exactly one request of the correct variant, with both strings unchanged. Caller gets Success(65535).
+    #[tokio::test]
+    async fn try_remove_forward() {
+        let (user_tx, mut user_rx) = mpsc::channel(1);
+        let mut caller = pin!(try_remove("éé", "🔑é", user_tx));
+        assert!(poll!(caller.as_mut()).is_pending());
+
+        let request = try_receive_request(&mut user_rx);
+        assert_eq!(request.username(), "éé");
+        assert_eq!(request.password(), "🔑é");
+        assert_no_queued_request(&mut user_rx);
+        assert!(request
+            .try_send(RemoveSelfResponse::Success(u16::MAX))
+            .is_ok());
+
+        let response = timeout(TEST_TIMEOUT, caller)
+            .await
+            .expect("caller should receive the worker reply");
+        assert!(matches!(response, RemoveSelfResponse::Success(u16::MAX)));
+        assert_no_queued_request(&mut user_rx);
+    }
+
+    // Alias: Handles a closed request channel
+    // Input: Drop the mpsc receiver before calling
+    // Expected: HandlerError.
+    #[tokio::test]
+    async fn try_remove_no_receiver() {
+        let (user_tx, user_rx) = mpsc::channel(1);
+        drop(user_rx);
+        let response = timeout(TEST_TIMEOUT, try_remove("éé", "🔑é", user_tx))
+            .await
+            .expect("caller should finish when the receiver is gone");
+        assert!(matches!(response, RemoveSelfResponse::HandlerError));
+    }
+
+    // Alias: Handles a dropped one-shot sender
+    // Input: Receive and drop the request without replying
+    // Expected: HandlerError.
+    #[tokio::test]
+    async fn try_remove_no_reply() {
+        let (user_tx, mut user_rx) = mpsc::channel(1);
+        let mut caller = pin!(try_remove("éé", "🔑é", user_tx));
+        assert!(poll!(caller.as_mut()).is_pending());
+        let request = try_receive_request(&mut user_rx);
+        assert_eq!(request.username(), "éé");
+        assert_eq!(request.password(), "🔑é");
+        drop(request);
+
+        let response = timeout(TEST_TIMEOUT, caller)
+            .await
+            .expect("caller should finish when the reply sender is dropped");
+        assert!(matches!(response, RemoveSelfResponse::HandlerError));
+    }
+
+    // Alias: Waits for channel capacity
+    // Input: Fill the channel with a request for "occupied", poll the call, drain the filler, then respond Success(65535) to the tested request
+    // Expected: Pending while full, then forwards the tested request once and returns Success(65535).
+    #[tokio::test]
+    async fn try_remove_full() {
+        let (user_tx, mut user_rx) = mpsc::channel(1);
+        fill_request_queue(&user_tx);
+        let mut caller = pin!(try_remove("éé", "🔑é", user_tx));
+        assert!(poll!(caller.as_mut()).is_pending(), "send waits while full");
+
+        let filler = try_receive_request(&mut user_rx);
+        assert_eq!(filler.username(), "occupied");
+        assert_eq!(filler.password(), "🔑é");
+        assert!(poll!(caller.as_mut()).is_pending(), "caller waits for its reply");
+
+        let request = try_receive_request(&mut user_rx);
+        assert_eq!(request.username(), "éé");
+        assert_eq!(request.password(), "🔑é");
+        assert_no_queued_request(&mut user_rx);
+        assert!(request
+            .try_send(RemoveSelfResponse::Success(u16::MAX))
+            .is_ok());
+
+        let response = timeout(TEST_TIMEOUT, caller)
+            .await
+            .expect("caller should finish after reply");
+        assert!(matches!(response, RemoveSelfResponse::Success(u16::MAX)));
+        assert_no_queued_request(&mut user_rx);
+    }
+
+    // Alias: Forwards the missing user reply
+    // Input: RemoveSelfResponse::UserNotFound
+    // Expected: RemoveSelfResponse::UserNotFound
+    #[tokio::test]
+    async fn try_remove_not_found() {
+        let (user_tx, mut user_rx) = mpsc::channel(1);
+        let mut caller = pin!(try_remove("éé", "🔑é", user_tx));
+        assert!(poll!(caller.as_mut()).is_pending());
+        let request = try_receive_request(&mut user_rx);
+        assert_eq!(request.username(), "éé");
+        assert_eq!(request.password(), "🔑é");
+        assert!(request.try_send(RemoveSelfResponse::UserNotFound).is_ok());
+
+        let response = timeout(TEST_TIMEOUT, caller)
+            .await
+            .expect("caller should finish after reply");
+        assert!(matches!(response, RemoveSelfResponse::UserNotFound));
+    }
+
+    // Alias: Forwards the wrong credentials reply
+    // Input: RemoveSelfResponse::WrongCredentials
+    // Expected: RemoveSelfResponse::WrongCredentials
+    #[tokio::test]
+    async fn try_remove_wrong_credentials() {
+        let (user_tx, mut user_rx) = mpsc::channel(1);
+        let mut caller = pin!(try_remove("éé", "🔑é", user_tx));
+        assert!(poll!(caller.as_mut()).is_pending());
+        let request = try_receive_request(&mut user_rx);
+        assert_eq!(request.username(), "éé");
+        assert_eq!(request.password(), "🔑é");
+        assert!(request.try_send(RemoveSelfResponse::WrongCredentials).is_ok());
+
+        let response = timeout(TEST_TIMEOUT, caller)
+            .await
+            .expect("caller should finish after reply");
+        assert!(matches!(response, RemoveSelfResponse::WrongCredentials));
+    }
+
+    // Alias: Forwards the removal handler error
+    // Input: RemoveSelfResponse::HandlerError
+    // Expected: RemoveSelfResponse::HandlerError
+    #[tokio::test]
+    async fn try_remove_handler_error() {
+        let (user_tx, mut user_rx) = mpsc::channel(1);
+        let mut caller = pin!(try_remove("éé", "🔑é", user_tx));
+        assert!(poll!(caller.as_mut()).is_pending());
+        let request = try_receive_request(&mut user_rx);
+        assert_eq!(request.username(), "éé");
+        assert_eq!(request.password(), "🔑é");
+        assert!(request.try_send(RemoveSelfResponse::HandlerError).is_ok());
+
+        let response = timeout(TEST_TIMEOUT, caller)
+            .await
+            .expect("caller should finish after reply");
+        assert!(matches!(response, RemoveSelfResponse::HandlerError));
     }
 
     #[tokio::test]

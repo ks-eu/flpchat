@@ -47,6 +47,10 @@
     "try-insert": {
       "title": "try_insert",
       "inputs": "username: &str, hashed_password: &str, user_tx: Sender<UserRequest>"
+    },
+    "try-remove": {
+      "title": "try_remove",
+      "inputs": "username: &str, password: &str, user_tx: Sender<UserRequest>"
     }
   },
   "cases": {
@@ -793,6 +797,62 @@
       "alias": "Forwards the registration handler error",
       "input": "RegResponse::HandlerError",
       "expected": "RegResponse::HandlerError."
+    },
+    "users::remove::tests::try_remove_forward": {
+      "id": "try-remove-forward",
+      "component": "try-remove",
+      "suite": "regular",
+      "alias": "Forwards the exact request",
+      "input": "Receive the helper's message and respond with Success(65535)",
+      "expected": "Exactly one request of the correct variant, with both strings unchanged. Caller gets Success(65535)."
+    },
+    "users::remove::tests::try_remove_no_receiver": {
+      "id": "try-remove-no-receiver",
+      "component": "try-remove",
+      "suite": "regular",
+      "alias": "Handles a closed request channel",
+      "input": "Drop the mpsc receiver before calling",
+      "expected": "HandlerError."
+    },
+    "users::remove::tests::try_remove_no_reply": {
+      "id": "try-remove-no-reply",
+      "component": "try-remove",
+      "suite": "regular",
+      "alias": "Handles a dropped one-shot sender",
+      "input": "Receive and drop the request without replying",
+      "expected": "HandlerError."
+    },
+    "users::remove::tests::try_remove_full": {
+      "id": "try-remove-full",
+      "component": "try-remove",
+      "suite": "regular",
+      "alias": "Waits for channel capacity",
+      "input": "Fill the channel with a request for \"occupied\", poll the call, drain the filler, then respond Success(65535) to the tested request",
+      "expected": "Pending while full, then forwards the tested request once and returns Success(65535)."
+    },
+    "users::remove::tests::try_remove_not_found": {
+      "id": "try-remove-not-found",
+      "component": "try-remove",
+      "suite": "regular",
+      "alias": "Forwards the missing user reply",
+      "input": "RemoveSelfResponse::UserNotFound",
+      "expected": "RemoveSelfResponse::UserNotFound"
+    },
+    "users::remove::tests::try_remove_wrong_credentials": {
+      "id": "try-remove-wrong-credentials",
+      "component": "try-remove",
+      "suite": "regular",
+      "alias": "Forwards the wrong credentials reply",
+      "input": "RemoveSelfResponse::WrongCredentials",
+      "expected": "RemoveSelfResponse::WrongCredentials"
+    },
+    "users::remove::tests::try_remove_handler_error": {
+      "id": "try-remove-handler-error",
+      "component": "try-remove",
+      "suite": "regular",
+      "alias": "Forwards the removal handler error",
+      "input": "RemoveSelfResponse::HandlerError",
+      "expected": "RemoveSelfResponse::HandlerError"
     }
   }
 }
