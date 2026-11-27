@@ -23,8 +23,6 @@ use tokio_util::codec::Framed;
 
 #[path = "../src/database/mod.rs"]
 mod database;
-#[path = "../src/hashing.rs"]
-mod hashing;
 #[path = "../src/users/mod.rs"]
 mod users;
 
@@ -209,7 +207,7 @@ async fn run_tcp_insert(pool: &PgPool) -> Result<(), Box<dyn Error>> {
             matches!(response, FlpcUnit::Server(ServerUnit::ServerRegister(reply)) if *reply.outcome() == 0)
         );
         let hash = insert_state(pool).await?;
-        assert_eq!(hashing::verify_password(PASSWORD, &hash), Ok(true));
+        assert_eq!(database::hash::verify_password(PASSWORD, &hash), Ok(true));
         rollback_sample(pool).await?;
         if run > 0 {
             samples.push(elapsed_ms);

@@ -18,7 +18,7 @@ use flpc::unit::{
 use flpc::tokio::{CodecError, FlpcCodec};
 
 use crate::database::users::UserRequest;
-use crate::hashing::hash_password;
+use crate::database::hash::hash_password;
 use crate::users::invalid_credential_lengths;
 
 type FlpcSink = SplitSink<Framed<TcpStream, FlpcCodec>, FlpcUnit>;

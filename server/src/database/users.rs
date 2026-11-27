@@ -6,7 +6,7 @@ use tokio::sync::{mpsc, Semaphore};
 use crate::users::registration::{RegRequest, RegResponse};
 use crate::users::remove::{RemoveSelfRequest, RemoveSelfResponse};
 use crate::users::login::{LoginRequest, LoginResponse};
-use crate::hashing::verify_password;
+use crate::database::hash::verify_password;
 
 pub enum UserRequest {
     RegRequest(RegRequest),

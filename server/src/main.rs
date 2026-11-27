@@ -1,5 +1,4 @@
 mod database;
-mod hashing;
 mod users;
 
 #[tokio::main]

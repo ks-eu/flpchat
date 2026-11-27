@@ -2,6 +2,7 @@ use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 use std::time::Duration;
 
+pub(crate) mod hash;
 pub(crate) mod users;
 
 pub async fn create_pool() -> Result<PgPool, sqlx::Error> {
