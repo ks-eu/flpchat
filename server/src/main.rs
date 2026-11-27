@@ -1,5 +1,5 @@
 mod database;
-mod users;
+mod connection;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

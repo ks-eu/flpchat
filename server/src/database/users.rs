@@ -3,9 +3,9 @@ use std::sync::Arc;
 
 use sqlx::PgPool;
 use tokio::sync::{mpsc, Semaphore};
-use crate::users::registration::{RegRequest, RegResponse};
-use crate::users::remove::{RemoveSelfRequest, RemoveSelfResponse};
-use crate::users::login::{LoginRequest, LoginResponse};
+use crate::connection::registration::{RegRequest, RegResponse};
+use crate::connection::remove::{RemoveSelfRequest, RemoveSelfResponse};
+use crate::connection::login::{LoginRequest, LoginResponse};
 use crate::database::hash::{hash_password, verify_password};
 
 pub enum UserRequest {

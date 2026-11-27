@@ -23,11 +23,11 @@ use tokio_util::codec::Framed;
 
 #[path = "../src/database/mod.rs"]
 mod database;
-#[path = "../src/users/mod.rs"]
-mod users;
+#[path = "../src/connection/mod.rs"]
+mod connection;
 
 use database::users::UserHandler;
-use users::{registration::handle_register, remove::handle_removeself};
+use connection::{registration::handle_register, remove::handle_removeself};
 
 const TCP_TIMEOUT: Duration = Duration::from_secs(30);
 const SAMPLE_COUNT: usize = 20;
