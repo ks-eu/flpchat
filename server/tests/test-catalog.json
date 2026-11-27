@@ -51,6 +51,10 @@
     "try-remove": {
       "title": "try_remove",
       "inputs": "username: &str, password: &str, user_tx: Sender<UserRequest>"
+    },
+    "handle-removeself": {
+      "title": "handle_removeself",
+      "inputs": "request: RemoveSelf, user_tx: Sender<UserRequest>, sink: FlpcSink, max_len_username: usize, max_len_password: usize"
     }
   },
   "cases": {
@@ -853,6 +857,70 @@
       "alias": "Forwards the removal handler error",
       "input": "RemoveSelfResponse::HandlerError",
       "expected": "RemoveSelfResponse::HandlerError"
+    },
+    "users::remove::tests::removeself_ok": {
+      "id": "removeself-ok",
+      "component": "handle-removeself",
+      "suite": "regular",
+      "alias": "Removes at exact UTF-8 byte limits",
+      "input": "account(7, \"éé\", H(\"🔑é\")), (\"éé\", \"🔑é\")",
+      "expected": "Code 0. Account 7 and its profile are gone; ID 7 remains claimed."
+    },
+    "users::remove::tests::removeself_wrong": {
+      "id": "removeself-wrong",
+      "component": "handle-removeself",
+      "suite": "regular",
+      "alias": "Preserves the account for wrong credentials",
+      "input": "account(7, \"user\", H(\"secret\")), (\"user\", \"wrong\")",
+      "expected": "Code 1. Account 7 and its profile remain; ID 7 stays claimed."
+    },
+    "users::remove::tests::removeself_empty_user": {
+      "id": "removeself-empty-user",
+      "component": "handle-removeself",
+      "suite": "regular",
+      "alias": "Rejects an empty username",
+      "input": "account(7, \"user\", H(\"secret\")), (\"\", \"secret\")",
+      "expected": "Code 2. Account 7 and its profile remain; ID 7 stays claimed."
+    },
+    "users::remove::tests::removeself_empty_password": {
+      "id": "removeself-empty-password",
+      "component": "handle-removeself",
+      "suite": "regular",
+      "alias": "Rejects an empty password",
+      "input": "account(7, \"user\", H(\"secret\")), (\"user\", \"\")",
+      "expected": "Code 2. Account 7 and its profile remain; ID 7 stays claimed."
+    },
+    "users::remove::tests::removeself_long_user": {
+      "id": "removeself-long-user",
+      "component": "handle-removeself",
+      "suite": "regular",
+      "alias": "Rejects an over-limit username before deletion",
+      "input": "account(7, \"users\", H(\"secret\")), (\"users\", \"secret\")",
+      "expected": "Code 2. The matching account and profile remain; ID 7 stays claimed."
+    },
+    "users::remove::tests::removeself_long_password": {
+      "id": "removeself-long-password",
+      "component": "handle-removeself",
+      "suite": "regular",
+      "alias": "Rejects an over-limit password before deletion",
+      "input": "account(7, \"user\", H(\"secrets\")), (\"user\", \"secrets\")",
+      "expected": "Code 2. The matching account and profile remain; ID 7 stays claimed."
+    },
+    "users::remove::tests::removeself_missing": {
+      "id": "removeself-missing",
+      "component": "handle-removeself",
+      "suite": "regular",
+      "alias": "Reports a missing username",
+      "input": "account(7, \"user\", H(\"secret\")), (\"none\", \"secret\")",
+      "expected": "Code 3. Account 7 and its profile remain; ID 7 stays claimed."
+    },
+    "users::remove::tests::removeself_worker_error": {
+      "id": "removeself-worker-error",
+      "component": "handle-removeself",
+      "suite": "regular",
+      "alias": "Reports verification failure",
+      "input": "account(7, \"user\", H(\"secret\")), closed worker verification semaphore, (\"user\", \"secret\")",
+      "expected": "Code 4. Account 7 and its profile remain; ID 7 stays claimed."
     }
   }
 }

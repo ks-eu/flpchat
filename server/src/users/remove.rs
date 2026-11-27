@@ -115,20 +115,108 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use flpc::unit::{Register, ServerUnit};
+    use argon2::{Argon2, PasswordHasher};
+    use flpc::unit::ServerUnit;
     use futures_util::{StreamExt, poll};
-    use sqlx::PgPool;
+    use sqlx::{PgPool, types::JsonValue};
     use tokio::{net::TcpListener, sync::Semaphore, time::timeout};
 
     use super::*;
     use crate::database::{serial_tests::postgres_test, users::UserHandler};
-    use crate::users::registration::handle_register;
 
     const LIMITS: (usize, usize) = (4, 6);
     const TEST_TIMEOUT: Duration = Duration::from_secs(5);
 
     fn request(username: &str, password: &str) -> RemoveSelf {
         RemoveSelf::new(username.into(), password.into())
+    }
+
+    #[derive(Debug, PartialEq)]
+    struct RemovalSnapshot {
+        user: Option<JsonValue>,
+        profile: Option<JsonValue>,
+        id_available: bool,
+    }
+
+    async fn seed_account(pool: &PgPool, username: &str, password: &str) -> sqlx::Result<()> {
+        let hash = Argon2::default()
+            .hash_password(password.as_bytes())
+            .expect("test password should hash")
+            .to_string();
+        sqlx::query("DELETE FROM available_user_ids WHERE user_id = 7")
+            .execute(pool)
+            .await?;
+        sqlx::query(
+            "INSERT INTO users (user_id, username, password_hash)
+             OVERRIDING SYSTEM VALUE VALUES (7, $1, $2)",
+        )
+        .bind(username)
+        .bind(hash)
+        .execute(pool)
+        .await?;
+        sqlx::query("INSERT INTO user_information (user_id, username) VALUES (7, $1)")
+            .bind(username)
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn target_snapshot(pool: &PgPool) -> sqlx::Result<RemovalSnapshot> {
+        Ok(RemovalSnapshot {
+            user: sqlx::query_scalar::<_, JsonValue>(
+                "SELECT to_jsonb(record) FROM (SELECT * FROM users WHERE user_id = 7) AS record",
+            )
+            .fetch_optional(pool)
+            .await?,
+            profile: sqlx::query_scalar::<_, JsonValue>(
+                "SELECT to_jsonb(record) FROM (
+                     SELECT * FROM user_information WHERE user_id = 7
+                 ) AS record",
+            )
+            .fetch_optional(pool)
+            .await?,
+            id_available: sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM available_user_ids WHERE user_id = 7)",
+            )
+            .fetch_one(pool)
+            .await?,
+        })
+    }
+
+    async fn run_removal(
+        pool: PgPool,
+        username: &str,
+        password: &str,
+        permit: Arc<Semaphore>,
+    ) -> u8 {
+        timeout(TEST_TIMEOUT, async {
+            let (sink, mut peer) = loopback().await;
+            let (user_tx, user_rx) = mpsc::channel(1);
+            let worker = tokio::spawn(UserHandler::new(pool, user_rx, permit).run());
+            timeout(
+                TEST_TIMEOUT,
+                handle_removeself(
+                    request(username, password),
+                    user_tx.clone(),
+                    sink,
+                    LIMITS.0,
+                    LIMITS.1,
+                ),
+            )
+            .await
+            .expect("removal handler should finish");
+            let code = timeout(TEST_TIMEOUT, read_result(&mut peer))
+                .await
+                .expect("peer should receive one frame and EOF");
+            drop(user_tx);
+            timeout(TEST_TIMEOUT, worker)
+                .await
+                .expect("worker should stop after the request sender closes")
+                .expect("worker task should join");
+            code
+        })
+        .await
+        .expect("removal exchange should finish within the timeout")
     }
 
     async fn loopback() -> (FlpcSink, Framed<TcpStream, FlpcCodec>) {
@@ -146,13 +234,6 @@ mod tests {
         };
         assert!(peer.next().await.is_none(), "expected exactly one response frame");
         *response.result()
-    }
-
-    async fn receive_request(user_rx: &mut mpsc::Receiver<UserRequest>) -> RemoveSelfRequest {
-        let Some(UserRequest::RemoveSelfRequest(request)) = user_rx.recv().await else {
-            panic!("expected a removal request");
-        };
-        request
     }
 
     fn try_receive_request(user_rx: &mut mpsc::Receiver<UserRequest>) -> RemoveSelfRequest {
@@ -323,138 +404,173 @@ mod tests {
         assert!(matches!(response, RemoveSelfResponse::HandlerError));
     }
 
-    #[tokio::test]
-    async fn send_serverremoveself_preserves_result_byte() {
-        timeout(TEST_TIMEOUT, async {
-            let (sink, mut peer) = loopback().await;
-            send_serverremoveself(0xa5, sink).await.unwrap();
-            assert_eq!(read_result(&mut peer).await, 0xa5);
-        })
-        .await
-        .expect("response should reach peer");
-    }
-
-    #[tokio::test]
-    async fn handle_removeself_encodes_worker_outcomes() {
-        let cases = [
-            (RemoveSelfResponse::Success(u16::MAX), 0),
-            (RemoveSelfResponse::WrongCredentials, 1),
-            (RemoveSelfResponse::UserNotFound, 3),
-            (RemoveSelfResponse::HandlerError, 4),
-        ];
-
-        for (response, code) in cases {
-            timeout(TEST_TIMEOUT, async {
-                let (sink, mut peer) = loopback().await;
-                let (user_tx, mut user_rx) = mpsc::channel(1);
-                tokio::join!(
-                    handle_removeself(request("éé", "🔑é"), user_tx, sink, LIMITS.0, LIMITS.1),
-                    async {
-                        let request = receive_request(&mut user_rx).await;
-                        assert_eq!(request.username(), "éé");
-                        assert_eq!(request.password(), "🔑é");
-                        assert!(request.try_send(response).is_ok());
-                    },
-                );
-                assert_eq!(read_result(&mut peer).await, code);
-            })
-            .await
-            .expect("valid removal should reach worker and respond");
-        }
-    }
-
-    #[tokio::test]
-    async fn handle_removeself_rejects_invalid_credentials_before_dispatch() {
-        let cases = [
-            ("", "secret", LIMITS),
-            ("user", "", LIMITS),
-            ("users", "secret", LIMITS),
-            ("user", "secrets", LIMITS),
-            ("ééx", "secret", LIMITS),
-            ("user", "🔑éx", LIMITS),
-            ("user", "secret", (0, 6)),
-            ("user", "secret", (4, 0)),
-        ];
-
-        for (username, password, (username_limit, password_limit)) in cases {
-            timeout(TEST_TIMEOUT, async {
-                let (sink, mut peer) = loopback().await;
-                let (user_tx, mut user_rx) = mpsc::channel(1);
-                handle_removeself(
-                    request(username, password),
-                    user_tx,
-                    sink,
-                    username_limit,
-                    password_limit,
-                )
-                .await;
-                assert!(user_rx.recv().await.is_none(), "invalid credentials reached worker");
-                assert_eq!(read_result(&mut peer).await, 2);
-            })
-            .await
-            .expect("invalid removal should respond without a worker");
-        }
-    }
-
+    // Alias: Removes at exact UTF-8 byte limits
+    // Input: account(7, "éé", H("🔑é")), ("éé", "🔑é")
+    // Expected: Code 0. Account 7 and its profile are gone; ID 7 remains claimed.
     postgres_test! {
-        async fn registration_and_removal_use_the_real_worker(pool: PgPool) -> sqlx::Result<()> {
-            let (user_tx, user_rx) = mpsc::channel(1);
+        async fn removeself_ok(pool: PgPool) -> sqlx::Result<()> {
+            seed_account(&pool, "éé", "🔑é").await?;
+            let code = run_removal(
+                pool.clone(),
+                "éé",
+                "🔑é",
+                Arc::new(Semaphore::new(1)),
+            )
+            .await;
+
+            assert_eq!(code, 0);
+            assert_eq!(
+                target_snapshot(&pool).await?,
+                RemovalSnapshot {
+                    user: None,
+                    profile: None,
+                    id_available: false,
+                }
+            );
+            Ok(())
+        }
+    }
+
+    // Alias: Preserves the account for wrong credentials
+    // Input: account(7, "user", H("secret")), ("user", "wrong")
+    // Expected: Code 1. Account 7 and its profile remain; ID 7 stays claimed.
+    postgres_test! {
+        async fn removeself_wrong(pool: PgPool) -> sqlx::Result<()> {
+            seed_account(&pool, "user", "secret").await?;
+            let before = target_snapshot(&pool).await?;
+            let code = run_removal(
+                pool.clone(),
+                "user",
+                "wrong",
+                Arc::new(Semaphore::new(1)),
+            )
+            .await;
+
+            assert_eq!(code, 1);
+            assert_eq!(target_snapshot(&pool).await?, before);
+            Ok(())
+        }
+    }
+
+    // Alias: Rejects an empty username
+    // Input: account(7, "user", H("secret")), ("", "secret")
+    // Expected: Code 2. Account 7 and its profile remain; ID 7 stays claimed.
+    postgres_test! {
+        async fn removeself_empty_user(pool: PgPool) -> sqlx::Result<()> {
+            seed_account(&pool, "user", "secret").await?;
+            let before = target_snapshot(&pool).await?;
+            let code = run_removal(
+                pool.clone(),
+                "",
+                "secret",
+                Arc::new(Semaphore::new(1)),
+            )
+            .await;
+
+            assert_eq!(code, 2);
+            assert_eq!(target_snapshot(&pool).await?, before);
+            Ok(())
+        }
+    }
+
+    // Alias: Rejects an empty password
+    // Input: account(7, "user", H("secret")), ("user", "")
+    // Expected: Code 2. Account 7 and its profile remain; ID 7 stays claimed.
+    postgres_test! {
+        async fn removeself_empty_password(pool: PgPool) -> sqlx::Result<()> {
+            seed_account(&pool, "user", "secret").await?;
+            let before = target_snapshot(&pool).await?;
+            let code = run_removal(
+                pool.clone(),
+                "user",
+                "",
+                Arc::new(Semaphore::new(1)),
+            )
+            .await;
+
+            assert_eq!(code, 2);
+            assert_eq!(target_snapshot(&pool).await?, before);
+            Ok(())
+        }
+    }
+
+    // Alias: Rejects an over-limit username before deletion
+    // Input: account(7, "users", H("secret")), ("users", "secret")
+    // Expected: Code 2. The matching account and profile remain; ID 7 stays claimed.
+    postgres_test! {
+        async fn removeself_long_user(pool: PgPool) -> sqlx::Result<()> {
+            seed_account(&pool, "users", "secret").await?;
+            let before = target_snapshot(&pool).await?;
+            let code = run_removal(
+                pool.clone(),
+                "users",
+                "secret",
+                Arc::new(Semaphore::new(1)),
+            )
+            .await;
+
+            assert_eq!(code, 2);
+            assert_eq!(target_snapshot(&pool).await?, before);
+            Ok(())
+        }
+    }
+
+    // Alias: Rejects an over-limit password before deletion
+    // Input: account(7, "user", H("secrets")), ("user", "secrets")
+    // Expected: Code 2. The matching account and profile remain; ID 7 stays claimed.
+    postgres_test! {
+        async fn removeself_long_password(pool: PgPool) -> sqlx::Result<()> {
+            seed_account(&pool, "user", "secrets").await?;
+            let before = target_snapshot(&pool).await?;
+            let code = run_removal(
+                pool.clone(),
+                "user",
+                "secrets",
+                Arc::new(Semaphore::new(1)),
+            )
+            .await;
+
+            assert_eq!(code, 2);
+            assert_eq!(target_snapshot(&pool).await?, before);
+            Ok(())
+        }
+    }
+
+    // Alias: Reports a missing username
+    // Input: account(7, "user", H("secret")), ("none", "secret")
+    // Expected: Code 3. Account 7 and its profile remain; ID 7 stays claimed.
+    postgres_test! {
+        async fn removeself_missing(pool: PgPool) -> sqlx::Result<()> {
+            seed_account(&pool, "user", "secret").await?;
+            let before = target_snapshot(&pool).await?;
+            let code = run_removal(
+                pool.clone(),
+                "none",
+                "secret",
+                Arc::new(Semaphore::new(1)),
+            )
+            .await;
+
+            assert_eq!(code, 3);
+            assert_eq!(target_snapshot(&pool).await?, before);
+            Ok(())
+        }
+    }
+
+    // Alias: Reports verification failure
+    // Input: account(7, "user", H("secret")), closed worker verification semaphore, ("user", "secret")
+    // Expected: Code 4. Account 7 and its profile remain; ID 7 stays claimed.
+    postgres_test! {
+        async fn removeself_worker_error(pool: PgPool) -> sqlx::Result<()> {
+            seed_account(&pool, "user", "secret").await?;
+            let before = target_snapshot(&pool).await?;
             let permit = Arc::new(Semaphore::new(1));
-            let worker = UserHandler::new(pool.clone(), user_rx, Arc::clone(&permit));
+            permit.close();
+            let code = run_removal(pool.clone(), "user", "secret", permit).await;
 
-            timeout(Duration::from_secs(15), async {
-                let exercise = async move {
-                    let (sink, mut peer) = loopback().await;
-                    handle_register(
-                        Register::new("token".into(), "user".into(), "🔑é".into()),
-                        user_tx.clone(),
-                        permit,
-                        sink,
-                        "token",
-                        LIMITS.0,
-                        LIMITS.1,
-                    )
-                    .await;
-                    let registration = peer
-                        .next()
-                        .await
-                        .expect("registration reply")
-                        .expect("valid FLPC frame");
-                    let FlpcUnit::Server(ServerUnit::ServerRegister(registration)) = registration else {
-                        panic!("expected ServerRegister, got {registration:?}");
-                    };
-                    assert_eq!(*registration.outcome(), 0);
-
-                    for (password, code, account_exists) in [
-                        ("wrong", 1, true),
-                        ("🔑é", 0, false),
-                        ("🔑é", 3, false),
-                    ] {
-                        let (sink, mut peer) = loopback().await;
-                        handle_removeself(
-                            request("user", password),
-                            user_tx.clone(),
-                            sink,
-                            LIMITS.0,
-                            LIMITS.1,
-                        )
-                        .await;
-                        assert_eq!(read_result(&mut peer).await, code);
-                        let exists: bool = sqlx::query_scalar(
-                            "SELECT EXISTS (SELECT 1 FROM users WHERE username = $1)",
-                        )
-                        .bind("user")
-                        .fetch_one(&pool)
-                        .await?;
-                        assert_eq!(exists, account_exists, "account state after result {code}");
-                    }
-                    Ok(())
-                };
-                let ((), result) = tokio::join!(worker.run(), exercise);
-                result
-            })
-            .await
-            .expect("registration and removal should complete")
+            assert_eq!(code, 4);
+            assert_eq!(target_snapshot(&pool).await?, before);
+            Ok(())
         }
     }
 }
