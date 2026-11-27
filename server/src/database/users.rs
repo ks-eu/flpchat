@@ -151,6 +151,25 @@ impl UserHandler {
         let _ = request.try_send(response);
     }
 
+    async fn login_user(
+        &self,
+        request: LoginRequest,
+        permit: Arc<Semaphore>,
+    ) {
+        let response = match self
+            .verify_credentials(request.username(), request.password(), permit)
+            .await
+        {
+            Ok(VerifyResult::Success(id)) => LoginResponse::Success(id as u16),
+            Ok(VerifyResult::WrongCredentials) => LoginResponse::WrongCredentials,
+            Ok(VerifyResult::UsernameNotFound) => LoginResponse::UserNotFound,
+            Err(_) => LoginResponse::HandlerError,
+        };
+
+        let _ = request.try_send(response);
+    }
+            
+
     async fn verify_credentials(
         &self,
         username: &str,
