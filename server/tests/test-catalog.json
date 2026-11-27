@@ -56,6 +56,10 @@
       "title": "UserHandler::login_user",
       "inputs": "&self, request: LoginRequest, permit: Arc<Semaphore>"
     },
+    "handle-login": {
+      "title": "handle_login",
+      "inputs": "request: Login, user_tx: Sender<UserRequest>, sink: FlpcSink, max_len_username: usize, max_len_password: usize"
+    },
     "try-verify": {
       "title": "try_verify",
       "inputs": "username: &str, password: &str, user_tx: Sender<UserRequest>"
@@ -1101,6 +1105,62 @@
       "alias": "Continues after a dropped login reply",
       "input": "Two queued valid logins with the first reply receiver dropped",
       "expected": "The second request receives Success(7)."
+    },
+    "users::login::tests::handle_login_returns_id_and_sink": {
+      "id": "login-returns-id-and-sink",
+      "component": "handle-login",
+      "suite": "regular",
+      "alias": "Returns the ID and a usable FLPC sink",
+      "input": "UTF-8 credentials at both byte limits with a real worker and PostgreSQL account 65535",
+      "expected": "Returns ID 65535. The peer receives only the frame written by the caller through the returned sink."
+    },
+    "users::login::tests::handle_login_invalid_lengths_skip_worker": {
+      "id": "login-invalid-lengths",
+      "component": "handle-login",
+      "suite": "regular",
+      "alias": "Rejects invalid credentials before worker dispatch",
+      "input": "Empty and one-byte-over-limit usernames and passwords",
+      "expected": "None, no queued login, and code 2."
+    },
+    "users::login::tests::handle_login_wrong_credentials": {
+      "id": "login-wrong-credentials",
+      "component": "handle-login",
+      "suite": "regular",
+      "alias": "Reports a wrong password",
+      "input": "Worker replies WrongCredentials",
+      "expected": "None and code 1."
+    },
+    "users::login::tests::handle_login_missing_user": {
+      "id": "login-missing-user",
+      "component": "handle-login",
+      "suite": "regular",
+      "alias": "Reports a missing username",
+      "input": "Worker replies UserNotFound",
+      "expected": "None and code 3."
+    },
+    "users::login::tests::handle_login_worker_error": {
+      "id": "login-worker-error",
+      "component": "handle-login",
+      "suite": "regular",
+      "alias": "Reports a worker failure",
+      "input": "Worker replies HandlerError",
+      "expected": "None and code 4."
+    },
+    "users::login::tests::handle_login_dropped_reply": {
+      "id": "login-dropped-reply",
+      "component": "handle-login",
+      "suite": "regular",
+      "alias": "Handles a dropped worker reply",
+      "input": "Drop the queued login without replying",
+      "expected": "None and code 4."
+    },
+    "users::login::tests::handle_login_closed_worker": {
+      "id": "login-closed-worker",
+      "component": "handle-login",
+      "suite": "regular",
+      "alias": "Handles a closed worker channel",
+      "input": "Drop the request receiver before login",
+      "expected": "None and code 4."
     },
     "users::login::tests::try_verify_forwards_credentials_and_responses": {
       "id": "try-verify-forward",

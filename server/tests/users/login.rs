@@ -1,12 +1,20 @@
-use std::{pin::pin, time::Duration};
+use std::{pin::pin, sync::Arc, time::Duration};
 
+use argon2::{Argon2, PasswordHasher};
 use flpc::unit::ServerUnit;
 use futures_util::{StreamExt, poll};
-use tokio::{io::AsyncWriteExt, net::TcpListener, time::timeout};
+use sqlx::PgPool;
+use tokio::{io::AsyncWriteExt, net::TcpListener, sync::Semaphore, time::timeout};
+
+use crate::database::{serial_tests::postgres_test, users::UserHandler};
 
 use super::*;
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(5);
+const USERNAME: &str = "éé";
+const PASSWORD: &str = "🔑é";
+const USERNAME_LIMIT: usize = 4;
+const PASSWORD_LIMIT: usize = 6;
 
 fn receive_login(user_rx: &mut mpsc::Receiver<UserRequest>) -> LoginRequest {
     let UserRequest::LoginRequest(request) = user_rx.try_recv().expect("queued login request")
@@ -134,4 +142,164 @@ async fn send_serverlogin_returns_write_error() {
     })
     .await
     .expect("write should fail after shutdown");
+}
+
+async fn login_sink() -> (FlpcSink, Framed<TcpStream, FlpcCodec>) {
+    let (server, peer) = loopback().await;
+    let (sink, _) = Framed::new(server, FlpcCodec).split();
+    (sink, Framed::new(peer, FlpcCodec))
+}
+
+async fn assert_login_frame(peer: &mut Framed<TcpStream, FlpcCodec>, expected: u8) {
+    let frame = peer
+        .next()
+        .await
+        .expect("login response frame")
+        .expect("valid FLPC frame");
+    let FlpcUnit::Server(ServerUnit::ServerLogin(response)) = frame else {
+        panic!("expected ServerLogin, got {frame:?}");
+    };
+    assert_eq!(*response.outcome(), expected);
+    assert!(peer.next().await.is_none(), "expected exactly one frame");
+}
+
+postgres_test! {
+    async fn handle_login_returns_id_and_sink(pool: PgPool) -> sqlx::Result<()> {
+        let hash = Argon2::default().hash_password(PASSWORD.as_bytes()).unwrap().to_string();
+        sqlx::query("DELETE FROM available_user_ids WHERE user_id = 65535")
+            .execute(&pool)
+            .await?;
+        sqlx::query(
+            "INSERT INTO users (user_id, username, password_hash)
+             OVERRIDING SYSTEM VALUE VALUES (65535, $1, $2)",
+        )
+        .bind(USERNAME)
+        .bind(hash)
+        .execute(&pool)
+        .await?;
+        let (user_tx, user_rx) = mpsc::channel(1);
+        let worker = tokio::spawn(UserHandler::new(pool, user_rx).run(Arc::new(Semaphore::new(1))));
+
+        timeout(TEST_TIMEOUT, async {
+            let (sink, mut peer) = login_sink().await;
+            let (id, mut returned_sink) = handle_login(
+                Login::new(USERNAME.into(), PASSWORD.into()),
+                user_tx,
+                sink,
+                USERNAME_LIMIT,
+                PASSWORD_LIMIT,
+            )
+            .await
+            .expect("login should return an ID and a usable sink");
+            assert_eq!(id, u16::MAX);
+            returned_sink.send(ServerLogin::new(0x5a).into()).await.unwrap();
+            drop(returned_sink);
+            assert_login_frame(&mut peer, 0x5a).await;
+            worker.await.expect("login worker should exit");
+        })
+        .await
+        .expect("login exchange should finish");
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn handle_login_invalid_lengths_skip_worker() {
+    timeout(TEST_TIMEOUT, async {
+        for (username, password) in [
+            ("", PASSWORD),
+            ("ééa", PASSWORD),
+            (USERNAME, ""),
+            (USERNAME, "🔑éa"),
+        ] {
+            let (sink, mut peer) = login_sink().await;
+            let (user_tx, mut user_rx) = mpsc::channel(1);
+            let (result, ()) = tokio::join!(
+                handle_login(
+                    Login::new(username.into(), password.into()),
+                    user_tx,
+                    sink,
+                    USERNAME_LIMIT,
+                    PASSWORD_LIMIT,
+                ),
+                async {
+                    assert!(
+                        user_rx.recv().await.is_none(),
+                        "invalid credentials should never enqueue a login"
+                    );
+                },
+            );
+            assert!(result.is_none());
+            assert_login_frame(&mut peer, 2).await;
+        }
+    })
+    .await
+    .expect("validation exchanges should finish");
+}
+
+async fn assert_login_rejected(reply: Option<LoginResponse>, expected: u8) {
+    timeout(TEST_TIMEOUT, async {
+        let (sink, mut peer) = login_sink().await;
+        let (user_tx, mut user_rx) = mpsc::channel(1);
+        let mut caller = pin!(handle_login(
+            Login::new(USERNAME.into(), PASSWORD.into()),
+            user_tx,
+            sink,
+            USERNAME_LIMIT,
+            PASSWORD_LIMIT,
+        ));
+        assert!(poll!(caller.as_mut()).is_pending());
+        let request = receive_login(&mut user_rx);
+        if let Some(reply) = reply {
+            assert!(request.try_send(reply).is_ok());
+        } else {
+            drop(request);
+        }
+        assert!(caller.await.is_none());
+        assert_login_frame(&mut peer, expected).await;
+    })
+    .await
+    .expect("rejection exchange should finish");
+}
+
+#[tokio::test]
+async fn handle_login_wrong_credentials() {
+    assert_login_rejected(Some(LoginResponse::WrongCredentials), 1).await;
+}
+
+#[tokio::test]
+async fn handle_login_missing_user() {
+    assert_login_rejected(Some(LoginResponse::UserNotFound), 3).await;
+}
+
+#[tokio::test]
+async fn handle_login_worker_error() {
+    assert_login_rejected(Some(LoginResponse::HandlerError), 4).await;
+}
+
+#[tokio::test]
+async fn handle_login_dropped_reply() {
+    assert_login_rejected(None, 4).await;
+}
+
+#[tokio::test]
+async fn handle_login_closed_worker() {
+    timeout(TEST_TIMEOUT, async {
+        let (sink, mut peer) = login_sink().await;
+        let (user_tx, user_rx) = mpsc::channel(1);
+        drop(user_rx);
+        let result = handle_login(
+            Login::new(USERNAME.into(), PASSWORD.into()),
+            user_tx,
+            sink,
+            USERNAME_LIMIT,
+            PASSWORD_LIMIT,
+        )
+        .await;
+
+        assert!(result.is_none());
+        assert_login_frame(&mut peer, 4).await;
+    })
+    .await
+    .expect("closed-worker exchange should finish");
 }
