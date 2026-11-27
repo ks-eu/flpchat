@@ -4,16 +4,25 @@ use argon2::{Argon2, PasswordHasher};
 use futures_util::poll;
 use sqlx::types::JsonValue;
 use tokio::{
-    sync::{Semaphore, mpsc},
+    sync::{Semaphore, mpsc, oneshot},
     time::timeout,
 };
 
 use crate::database::serial_tests::postgres_test;
 
 use super::transaction_pool::transaction_pool;
-use super::{PgPool, RemoveSelfResponse, UserHandler, VerifyError, VerifyResult};
+use super::{PgPool, RemoveSelfRequest, RemoveSelfResponse, UserHandler, VerifyError, VerifyResult};
 
 const VERIFY_TIMEOUT: Duration = Duration::from_secs(5);
+const TARGET_PASSWORD: &str = "timing-password";
+const TARGET_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$bGlnaHRjaGF0LWJlbmNobWFyaw$NG0zwI7kM/Cq+dLLB3HMbPwk1I8NW1iSDPpYPr/ImjU";
+
+async fn remove(handler: &UserHandler, username: &str, password: &str) -> RemoveSelfResponse {
+    let (reply_tx, reply_rx) = oneshot::channel();
+    let request = RemoveSelfRequest::new(username.into(), password.into(), reply_tx);
+    handler.removeself_user(request, Arc::new(Semaphore::new(1))).await;
+    reply_rx.await.expect("removeself_user should send one response")
+}
 
 #[derive(Debug, PartialEq)]
 struct DatabaseSnapshot {
@@ -31,10 +40,11 @@ async fn seed_removal_fixture(pool: &PgPool) -> sqlx::Result<()> {
     sqlx::query(
         "INSERT INTO users (user_id, username, password_hash)
          OVERRIDING SYSTEM VALUE
-         VALUES (7, 'target', 'target-hash'),
+         VALUES (7, 'target', $1),
                 (8, 'peer-a', 'peer-a-hash'),
                 (9, 'peer-b', 'peer-b-hash')",
     )
+    .bind(TARGET_HASH)
     .execute(pool)
     .await?;
     sqlx::query(
@@ -136,26 +146,26 @@ async fn seed_lookup_account(pool: &PgPool, username: &str, hash: &str) -> sqlx:
 
 // Alias: Looks up the exact quoted username
 // Input: account(7, "O'Reilly", "hash-upper"), account(8, "o'reilly", "hash-lower"), input "O'Reilly"
-// Expected: Ok(Some("hash-upper")).
+// Expected: Ok(Some((7, "hash-upper"))).
 postgres_test! {
     async fn lookup_exact_upper(pool: PgPool) -> sqlx::Result<()> {
         seed_lookup_accounts(&pool).await?;
         let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
 
-        assert_eq!(handler.get_hashed_password("O'Reilly").await?.as_deref(), Some("hash-upper"));
+        assert_eq!(handler.get_credentials("O'Reilly").await?, Some((7, "hash-upper".into())));
         Ok(())
     }
 }
 
 // Alias: Distinguishes username case
 // Input: Same account fixture, input "o'reilly"
-// Expected: Ok(Some("hash-lower")).
+// Expected: Ok(Some((8, "hash-lower"))).
 postgres_test! {
     async fn lookup_exact_lower(pool: PgPool) -> sqlx::Result<()> {
         seed_lookup_accounts(&pool).await?;
         let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
 
-        assert_eq!(handler.get_hashed_password("o'reilly").await?.as_deref(), Some("hash-lower"));
+        assert_eq!(handler.get_credentials("o'reilly").await?, Some((8, "hash-lower".into())));
         Ok(())
     }
 }
@@ -168,20 +178,20 @@ postgres_test! {
         seed_lookup_accounts(&pool).await?;
         let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
 
-        assert_eq!(handler.get_hashed_password("O'Reill").await?, None);
+        assert_eq!(handler.get_credentials("O'Reill").await?, None);
         Ok(())
     }
 }
 
 // Alias: Returns the stored string unchanged
 // Input: account(7, "account", "invalid-phc"), input "account"
-// Expected: Ok(Some("invalid-phc")).
+// Expected: Ok(Some((7, "invalid-phc"))).
 postgres_test! {
     async fn lookup_raw(pool: PgPool) -> sqlx::Result<()> {
         seed_lookup_account(&pool, "account", "invalid-phc").await?;
         let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
 
-        assert_eq!(handler.get_hashed_password("account").await?.as_deref(), Some("invalid-phc"));
+        assert_eq!(handler.get_credentials("account").await?, Some((7, "invalid-phc".into())));
         Ok(())
     }
 }
@@ -196,7 +206,7 @@ postgres_test! {
         pool.close().await;
 
         assert!(matches!(
-            handler.get_hashed_password("account").await,
+            handler.get_credentials("account").await,
             Err(sqlx::Error::PoolClosed)
         ));
         Ok(())
@@ -205,7 +215,7 @@ postgres_test! {
 
 // Alias: Returns the stored hash on exact match
 // Input: V, ("account", "café🔑")
-// Expected: Success(original_encoded_hash) byte-for-byte; one permit remains available.
+// Expected: Success(7); one permit remains available.
 postgres_test! {
     async fn verify_match(pool: PgPool) -> sqlx::Result<()> {
         let pool = transaction_pool(&pool).await?;
@@ -216,7 +226,7 @@ postgres_test! {
 
         assert!(matches!(
             handler.verify_credentials("account", "café🔑", Arc::clone(&permit)).await,
-            Ok(VerifyResult::Success(stored_hash)) if stored_hash == hash
+            Ok(VerifyResult::Success(7))
         ));
         assert_eq!(permit.available_permits(), 1);
 
@@ -364,7 +374,7 @@ postgres_test! {
 
 // Alias: Waits for a permit
 // Input: Hold V's only permit, poll ("account", "café🔑") to permit acquisition, then release the held permit.
-// Expected: Pending while held. After release, Success(original_encoded_hash) and one permit available.
+// Expected: Pending while held. After release, Success(7) and one permit available.
 postgres_test! {
     async fn verify_wait(pool: PgPool) -> sqlx::Result<()> {
         let pool = transaction_pool(&pool).await?;
@@ -405,7 +415,7 @@ postgres_test! {
             timeout(VERIFY_TIMEOUT, verification.as_mut())
                 .await
                 .expect("verification should finish after permit release"),
-            Ok(VerifyResult::Success(stored_hash)) if stored_hash == hash
+            Ok(VerifyResult::Success(7))
         ));
         assert_eq!(permit.available_permits(), 1);
 
@@ -456,7 +466,7 @@ postgres_test! {
 }
 
 // Alias: Deletes the account without recycling its ID
-// Input: R without messages, removeself_user("target", "target-hash")
+// Input: R without messages, RemoveSelfRequest("target", "timing-password")
 // Expected: Success(7). Account and profile 7 are gone. Peers survive and IDs=[10].
 postgres_test! {
     async fn remove_match(pool: PgPool) -> sqlx::Result<()> {
@@ -464,7 +474,7 @@ postgres_test! {
         let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
 
         assert!(matches!(
-            handler.removeself_user("target", "target-hash").await,
+            remove(&handler, "target", TARGET_PASSWORD).await,
             RemoveSelfResponse::Success(7)
         ));
         let users = sqlx::query_as::<_, (i32, String, String)>(
@@ -496,8 +506,8 @@ postgres_test! {
     }
 }
 
-// Alias: Preserves rows for a different account's hash
-// Input: R with all messages, removeself_user("target", "peer-a-hash")
+// Alias: Preserves rows for a wrong password
+// Input: R with all messages, RemoveSelfRequest("target", "wrong")
 // Expected: WrongCredentials. Accounts, profiles, all messages and IDs are unchanged.
 postgres_test! {
     async fn remove_wrong(pool: PgPool) -> sqlx::Result<()> {
@@ -516,7 +526,7 @@ postgres_test! {
         let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
 
         assert!(matches!(
-            handler.removeself_user("target", "peer-a-hash").await,
+            remove(&handler, "target", "wrong").await,
             RemoveSelfResponse::WrongCredentials
         ));
         assert_eq!(snapshot(&pool).await?, before);
@@ -526,7 +536,7 @@ postgres_test! {
 }
 
 // Alias: Reports unknown username
-// Input: R without messages, removeself_user("missing", "target-hash")
+// Input: R without messages, RemoveSelfRequest("missing", "timing-password")
 // Expected: UserNotFound and no writes.
 postgres_test! {
     async fn remove_missing(pool: PgPool) -> sqlx::Result<()> {
@@ -535,7 +545,7 @@ postgres_test! {
         let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
 
         assert!(matches!(
-            handler.removeself_user("missing", "target-hash").await,
+            remove(&handler, "missing", TARGET_PASSWORD).await,
             RemoveSelfResponse::UserNotFound
         ));
         assert_eq!(snapshot(&pool).await?, before);
@@ -545,7 +555,7 @@ postgres_test! {
 }
 
 // Alias: Reports an already removed username
-// Input: Remove ("target", "target-hash") successfully from R, then call again with the same values.
+// Input: Remove ("target", "timing-password") successfully from R, then call again with the same values.
 // Expected: Second call returns UserNotFound. Peers and IDs=[10] remain unchanged.
 postgres_test! {
     async fn remove_twice(pool: PgPool) -> sqlx::Result<()> {
@@ -553,11 +563,11 @@ postgres_test! {
         let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
 
         assert!(matches!(
-            handler.removeself_user("target", "target-hash").await,
+            remove(&handler, "target", TARGET_PASSWORD).await,
             RemoveSelfResponse::Success(7)
         ));
         assert!(matches!(
-            handler.removeself_user("target", "target-hash").await,
+            remove(&handler, "target", TARGET_PASSWORD).await,
             RemoveSelfResponse::UserNotFound
         ));
         let users = sqlx::query_as::<_, (i32, String, String)>(
@@ -594,23 +604,25 @@ postgres_test! {
 }
 
 // Alias: Uses the recreated account's current hash and ID
-// Input: Remove target 7 from R; recreate account(10, "target", "replacement-hash"); call with "target-hash", then "replacement-hash".
+// Input: Remove target 7 from R; recreate account(10, "target", "replacement-hash"); call with "timing-password", then "replacement-hash".
 // Expected: First call returns WrongCredentials and leaves account 10 intact. Second returns Success(10) and deletes account 10. Neither ID is recycled.
 postgres_test! {
     async fn remove_recreated(pool: PgPool) -> sqlx::Result<()> {
         seed_removal_fixture(&pool).await?;
         let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
         assert!(matches!(
-            handler.removeself_user("target", "target-hash").await,
+            remove(&handler, "target", TARGET_PASSWORD).await,
             RemoveSelfResponse::Success(7)
         ));
         sqlx::query("DELETE FROM available_user_ids WHERE user_id = 10")
             .execute(&pool)
             .await?;
+        let replacement_hash = Argon2::default().hash_password(b"replacement").unwrap().to_string();
         sqlx::query(
             "INSERT INTO users (user_id, username, password_hash)
-             OVERRIDING SYSTEM VALUE VALUES (10, 'target', 'replacement-hash')",
+             OVERRIDING SYSTEM VALUE VALUES (10, 'target', $1)",
         )
+        .bind(&replacement_hash)
         .execute(&pool)
         .await?;
         sqlx::query("INSERT INTO user_information (user_id, username) VALUES (10, 'target')")
@@ -618,7 +630,7 @@ postgres_test! {
             .await?;
 
         assert!(matches!(
-            handler.removeself_user("target", "target-hash").await,
+            remove(&handler, "target", TARGET_PASSWORD).await,
             RemoveSelfResponse::WrongCredentials
         ));
         assert_eq!(
@@ -627,7 +639,7 @@ postgres_test! {
             )
             .fetch_one(&pool)
             .await?,
-            (10, "target".into(), "replacement-hash".into())
+            (10, "target".into(), replacement_hash)
         );
         assert_eq!(
             sqlx::query_scalar::<_, i32>(
@@ -638,7 +650,7 @@ postgres_test! {
             10
         );
         assert!(matches!(
-            handler.removeself_user("target", "replacement-hash").await,
+            remove(&handler, "target", "replacement").await,
             RemoveSelfResponse::Success(10)
         ));
         let final_state = snapshot(&pool).await?;
@@ -657,7 +669,7 @@ postgres_test! {
 }
 
 // Alias: Returns the maximum user ID
-// Input: account(65535, "last-user", "last-hash"), removeself_user("last-user", "last-hash")
+// Input: account(65535, "last-user", "last-hash"), RemoveSelfRequest("last-user", "timing-password")
 // Expected: Success(65535) and account 65535 is gone.
 postgres_test! {
     async fn remove_max_id(pool: PgPool) -> sqlx::Result<()> {
@@ -666,8 +678,9 @@ postgres_test! {
             .await?;
         sqlx::query(
             "INSERT INTO users (user_id, username, password_hash)
-             OVERRIDING SYSTEM VALUE VALUES (65535, 'last-user', 'last-hash')",
+             OVERRIDING SYSTEM VALUE VALUES (65535, 'last-user', $1)",
         )
+        .bind(TARGET_HASH)
         .execute(&pool)
         .await?;
         sqlx::query("INSERT INTO user_information (user_id, username) VALUES (65535, 'last-user')")
@@ -676,7 +689,7 @@ postgres_test! {
         let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
 
         assert!(matches!(
-            handler.removeself_user("last-user", "last-hash").await,
+            remove(&handler, "last-user", TARGET_PASSWORD).await,
             RemoveSelfResponse::Success(65535)
         ));
         let final_state = snapshot(&pool).await?;
@@ -688,7 +701,7 @@ postgres_test! {
 }
 
 // Alias: Deletes the target's public messages
-// Input: R plus public messages 11 and 12, remove ("target", "target-hash").
+// Input: R plus public messages 11 and 12, remove ("target", "timing-password").
 // Expected: Success(7); profile 7 and message 11 are gone. Message 12 survives.
 postgres_test! {
     async fn remove_public_cascade(pool: PgPool) -> sqlx::Result<()> {
@@ -702,7 +715,7 @@ postgres_test! {
         let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
 
         assert!(matches!(
-            handler.removeself_user("target", "target-hash").await,
+            remove(&handler, "target", TARGET_PASSWORD).await,
             RemoveSelfResponse::Success(7)
         ));
         assert!(!sqlx::query_scalar::<_, bool>(
@@ -724,7 +737,7 @@ postgres_test! {
 }
 
 // Alias: Cascades through the sender ID
-// Input: R plus private messages 21 (7 to 8) and 23 (8 to 9), remove ("target", "target-hash").
+// Input: R plus private messages 21 (7 to 8) and 23 (8 to 9), remove ("target", "timing-password").
 // Expected: Success(7); private message 21 is gone. Message 23 survives.
 postgres_test! {
     async fn remove_private_sender(pool: PgPool) -> sqlx::Result<()> {
@@ -738,7 +751,7 @@ postgres_test! {
         let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
 
         assert!(matches!(
-            handler.removeself_user("target", "target-hash").await,
+            remove(&handler, "target", TARGET_PASSWORD).await,
             RemoveSelfResponse::Success(7)
         ));
         assert_eq!(
@@ -755,7 +768,7 @@ postgres_test! {
 }
 
 // Alias: Cascades through the recipient ID
-// Input: R plus private messages 22 (8 to 7) and 23 (8 to 9), remove ("target", "target-hash").
+// Input: R plus private messages 22 (8 to 7) and 23 (8 to 9), remove ("target", "timing-password").
 // Expected: Success(7); private message 22 is gone. Message 23 survives.
 postgres_test! {
     async fn remove_private_recipient(pool: PgPool) -> sqlx::Result<()> {
@@ -769,7 +782,7 @@ postgres_test! {
         let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
 
         assert!(matches!(
-            handler.removeself_user("target", "target-hash").await,
+            remove(&handler, "target", TARGET_PASSWORD).await,
             RemoveSelfResponse::Success(7)
         ));
         assert_eq!(
@@ -786,7 +799,7 @@ postgres_test! {
 }
 
 // Alias: Preserves dependents when deletion is blocked
-// Input: R plus all messages; a non-cascading foreign key references account 7; remove ("target", "target-hash").
+// Input: R plus all messages; a non-cascading foreign key references account 7; remove ("target", "timing-password").
 // Expected: HandlerError. All accounts, profiles, messages, and IDs survive.
 postgres_test! {
     async fn remove_db_error(pool: PgPool) -> sqlx::Result<()> {
@@ -810,10 +823,71 @@ postgres_test! {
         let before = snapshot(&pool).await?;
         let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
 
-        let response = handler.removeself_user("target", "target-hash").await;
+        let response = remove(&handler, "target", TARGET_PASSWORD).await;
         assert!(matches!(response, RemoveSelfResponse::HandlerError));
         assert_eq!(snapshot(&pool).await?, before);
 
+        Ok(())
+    }
+}
+
+postgres_test! {
+    async fn remove_stale_id(pool: PgPool) -> sqlx::Result<()> {
+        let pool = transaction_pool(&pool).await?;
+        seed_removal_fixture(&pool).await?;
+        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
+        let permit = Arc::new(Semaphore::new(1));
+        let held_permit = Arc::clone(&permit).acquire_owned().await.unwrap();
+        let held_connection = pool.acquire().await?;
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let request = RemoveSelfRequest::new("target".into(), TARGET_PASSWORD.into(), reply_tx);
+        let mut removal = pin!(handler.removeself_user(request, permit));
+        assert!(poll!(removal.as_mut()).is_pending());
+
+        let mut acquire = pin!(pool.acquire());
+        assert!(poll!(acquire.as_mut()).is_pending());
+        drop(held_connection);
+        let mut connection = timeout(VERIFY_TIMEOUT, async {
+            tokio::select! {
+                biased;
+                _ = removal.as_mut() => panic!("removal finished while hashing was blocked"),
+                connection = acquire.as_mut() => connection,
+            }
+        })
+        .await
+        .expect("removal should release the lookup connection")?;
+
+        assert!(poll!(removal.as_mut()).is_pending());
+        sqlx::raw_sql(
+            "DELETE FROM users WHERE user_id = 7;
+             DELETE FROM available_user_ids WHERE user_id = 10;",
+        )
+        .execute(&mut *connection)
+        .await?;
+        sqlx::query(
+            "INSERT INTO users (user_id, username, password_hash)
+             OVERRIDING SYSTEM VALUE VALUES (10, 'target', $1)",
+        )
+        .bind(TARGET_HASH)
+        .execute(&mut *connection)
+        .await?;
+        sqlx::query("INSERT INTO user_information (user_id, username) VALUES (10, 'target')")
+            .execute(&mut *connection)
+            .await?;
+        drop(connection);
+
+        drop(held_permit);
+        timeout(VERIFY_TIMEOUT, removal).await.expect("removal should finish");
+        assert!(matches!(reply_rx.await, Ok(RemoveSelfResponse::HandlerError)));
+        let remaining: i32 = sqlx::query_scalar(
+            "SELECT user_id FROM users JOIN user_information USING (user_id, username)
+             WHERE username = 'target'",
+        )
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(remaining, 10);
+        assert!(snapshot(&pool).await?.available_ids.is_empty());
+        sqlx::query("ROLLBACK").execute(&pool).await?;
         Ok(())
     }
 }

@@ -399,15 +399,15 @@
       "component": "removeself-user",
       "suite": "regular",
       "alias": "Deletes the account without recycling its ID",
-      "input": "R without messages, removeself_user(\"target\", \"target-hash\")",
+      "input": "R without messages, RemoveSelfRequest(\"target\", \"timing-password\")",
       "expected": "Success(7). Account and profile 7 are gone. Peers survive and IDs=[10]."
     },
     "database::users::removeself_user_tests::remove_wrong": {
       "id": "remove-wrong",
       "component": "removeself-user",
       "suite": "regular",
-      "alias": "Preserves rows for a different account's hash",
-      "input": "R with all messages, removeself_user(\"target\", \"peer-a-hash\")",
+      "alias": "Preserves rows for a wrong password",
+      "input": "R with all messages, RemoveSelfRequest(\"target\", \"wrong\")",
       "expected": "WrongCredentials. Accounts, profiles, all messages and IDs are unchanged."
     },
     "database::users::removeself_user_tests::remove_missing": {
@@ -415,7 +415,7 @@
       "component": "removeself-user",
       "suite": "regular",
       "alias": "Reports unknown username",
-      "input": "R without messages, removeself_user(\"missing\", \"target-hash\")",
+      "input": "R without messages, RemoveSelfRequest(\"missing\", \"timing-password\")",
       "expected": "UserNotFound and no writes."
     },
     "database::users::removeself_user_tests::remove_twice": {
@@ -423,15 +423,23 @@
       "component": "removeself-user",
       "suite": "regular",
       "alias": "Reports an already removed username",
-      "input": "Remove (\"target\", \"target-hash\") successfully from R, then call again with the same values.",
+      "input": "Remove (\"target\", \"timing-password\") successfully from R, then call again with the same values.",
       "expected": "Second call returns UserNotFound. Peers and IDs=[10] remain unchanged."
+    },
+    "database::users::removeself_user_tests::remove_stale_id": {
+      "id": "remove-stale-id",
+      "component": "removeself-user",
+      "suite": "regular",
+      "alias": "Targets only the verified ID",
+      "input": "Pause after credential lookup. Recreate the username at ID 10 with the same hash.",
+      "expected": "HandlerError. The replacement account and profile survive. Removed IDs are unavailable."
     },
     "database::users::removeself_user_tests::remove_recreated": {
       "id": "remove-recreated",
       "component": "removeself-user",
       "suite": "regular",
       "alias": "Uses the recreated account's current hash and ID",
-      "input": "Remove target 7 from R; recreate account(10, \"target\", \"replacement-hash\"); call with \"target-hash\", then \"replacement-hash\".",
+      "input": "Remove ID 7, recreate the username at ID 10 with a new password, then try both passwords.",
       "expected": "First call returns WrongCredentials and leaves account 10 intact. Second returns Success(10) and deletes account 10. Neither ID is recycled."
     },
     "database::users::removeself_user_tests::remove_max_id": {
@@ -439,7 +447,7 @@
       "component": "removeself-user",
       "suite": "regular",
       "alias": "Returns the maximum user ID",
-      "input": "account(65535, \"last-user\", \"last-hash\"), removeself_user(\"last-user\", \"last-hash\")",
+      "input": "account(65535, \"last-user\", \"timing-password\"), RemoveSelfRequest(\"last-user\", \"timing-password\")",
       "expected": "Success(65535) and account 65535 is gone."
     },
     "database::users::removeself_user_tests::remove_public_cascade": {
@@ -447,7 +455,7 @@
       "component": "removeself-user",
       "suite": "regular",
       "alias": "Deletes the target's public messages",
-      "input": "R plus public messages 11 and 12, remove (\"target\", \"target-hash\").",
+      "input": "R plus public messages 11 and 12, remove (\"target\", \"timing-password\").",
       "expected": "Success(7); profile 7 and message 11 are gone. Message 12 survives."
     },
     "database::users::removeself_user_tests::remove_private_sender": {
@@ -455,7 +463,7 @@
       "component": "removeself-user",
       "suite": "regular",
       "alias": "Cascades through the sender ID",
-      "input": "R plus private messages 21 (7 to 8) and 23 (8 to 9), remove (\"target\", \"target-hash\").",
+      "input": "R plus private messages 21 (7 to 8) and 23 (8 to 9), remove (\"target\", \"timing-password\").",
       "expected": "Success(7); private message 21 is gone. Message 23 survives."
     },
     "database::users::removeself_user_tests::remove_private_recipient": {
@@ -463,7 +471,7 @@
       "component": "removeself-user",
       "suite": "regular",
       "alias": "Cascades through the recipient ID",
-      "input": "R plus private messages 22 (8 to 7) and 23 (8 to 9), remove (\"target\", \"target-hash\").",
+      "input": "R plus private messages 22 (8 to 7) and 23 (8 to 9), remove (\"target\", \"timing-password\").",
       "expected": "Success(7); private message 22 is gone. Message 23 survives."
     },
     "database::users::removeself_user_tests::remove_db_error": {
@@ -471,7 +479,7 @@
       "component": "removeself-user",
       "suite": "regular",
       "alias": "Preserves dependents when deletion is blocked",
-      "input": "R plus all messages; a non-cascading foreign key references account 7; remove (\"target\", \"target-hash\").",
+      "input": "R plus all messages; a non-cascading foreign key references account 7; remove (\"target\", \"timing-password\").",
       "expected": "HandlerError. All accounts, profiles, messages, and IDs survive."
     },
     "database::users::removeself_user_tests::verify_match": {
@@ -480,7 +488,7 @@
       "suite": "regular",
       "alias": "Returns the stored hash on exact match",
       "input": "V, (\"account\", \"café🔑\")",
-      "expected": "Success(original_encoded_hash) byte-for-byte; one permit remains available."
+      "expected": "Success(7); one permit remains available."
     },
     "database::users::removeself_user_tests::verify_wrong": {
       "id": "verify-wrong",
@@ -536,7 +544,7 @@
       "suite": "regular",
       "alias": "Waits for a permit",
       "input": "Hold V's only permit, poll (\"account\", \"café🔑\") to permit acquisition, then release the held permit.",
-      "expected": "Pending while held. After release, Success(original_encoded_hash) and one permit available."
+      "expected": "Pending while held. After release, Success(7) and one permit available."
     },
     "database::users::removeself_user_tests::verify_closed": {
       "id": "verify-closed",
@@ -560,7 +568,7 @@
       "suite": "regular",
       "alias": "Looks up the exact quoted username",
       "input": "account(7, \"O'Reilly\", \"hash-upper\"), account(8, \"o'reilly\", \"hash-lower\"), input \"O'Reilly\"",
-      "expected": "Ok(Some(\"hash-upper\"))."
+      "expected": "Ok(Some((7, \"hash-upper\")))."
     },
     "database::users::removeself_user_tests::lookup_exact_lower": {
       "id": "lookup-exact-lower",
@@ -568,7 +576,7 @@
       "suite": "regular",
       "alias": "Distinguishes username case",
       "input": "Same account fixture, input \"o'reilly\"",
-      "expected": "Ok(Some(\"hash-lower\"))."
+      "expected": "Ok(Some((8, \"hash-lower\")))."
     },
     "database::users::removeself_user_tests::lookup_missing": {
       "id": "lookup-missing",
@@ -584,7 +592,7 @@
       "suite": "regular",
       "alias": "Returns the stored string unchanged",
       "input": "account(7, \"account\", \"invalid-phc\"), input \"account\"",
-      "expected": "Ok(Some(\"invalid-phc\"))."
+      "expected": "Ok(Some((7, \"invalid-phc\")))."
     },
     "database::users::removeself_user_tests::lookup_closed": {
       "id": "lookup-closed",
@@ -990,17 +998,17 @@
       "id": "perf-lookup-sql",
       "component": "lookup-password",
       "suite": "performance",
-      "alias": "Looks up the target account hash (PostgreSQL Execution Time)",
+      "alias": "Looks up the target account ID and hash (PostgreSQL Execution Time)",
       "input": "Lookup SQL for \"bench-0001\" in the 1,000-account fixture",
-      "expected": "Exact precomputed timing-password hash; report Execution Time in milliseconds."
+      "expected": "ID 1 and the exact precomputed timing-password hash."
     },
     "database::users::query_performance_tests::perf_remove_empty_sql": {
       "id": "perf-remove-empty-sql",
       "component": "removeself-user",
       "suite": "performance",
       "alias": "Removes an account without message history (PostgreSQL Execution Time)",
-      "input": "removeself_user.sql for \"bench-0001\" with the timing-password fixture hash",
-      "expected": "(Some(true), Some(1)); account/profile are removed and ID 1 stays claimed."
+      "input": "remove_user.sql for ID 1",
+      "expected": "Some(1); account/profile are removed and ID 1 stays claimed."
     },
     "database::users::query_performance_tests::perf_remove_empty_tcp": {
       "id": "perf-remove-empty-tcp",
@@ -1015,8 +1023,8 @@
       "component": "removeself-user",
       "suite": "performance",
       "alias": "Removes an account with message history (PostgreSQL Execution Time)",
-      "input": "removeself_user.sql for \"bench-0001\" with the timing-password fixture hash and full history",
-      "expected": "(Some(true), Some(1)); target messages are removed and unrelated account-2/account-3 rows survive."
+      "input": "remove_user.sql for ID 1 and full history",
+      "expected": "Some(1); target messages are removed and unrelated account-2/account-3 rows survive."
     },
     "database::users::query_performance_tests::perf_remove_history_tcp": {
       "id": "perf-remove-history-tcp",
@@ -1026,13 +1034,13 @@
       "input": "handle_removeself(\"bench-0001\", \"timing-password\", limits 32/64); handler call through decoded TCP reply",
       "expected": "Peer decodes code 0; target public/private rows disappear and both unrelated rows survive."
     },
-    "database::users::query_performance_tests::perf_remove_wrong_sql": {
-      "id": "perf-remove-wrong-sql",
+    "database::users::query_performance_tests::perf_remove_missing_sql": {
+      "id": "perf-remove-missing-sql",
       "component": "removeself-user",
       "suite": "performance",
-      "alias": "Preserves an account after wrong credentials (PostgreSQL Execution Time)",
-      "input": "removeself_user.sql for \"bench-0001\" with \"wrong-hash\" and full history",
-      "expected": "(Some(false), None); account/profile/hash, claimed ID, and every target/unrelated message remain."
+      "alias": "Attempts deletion of a missing ID (PostgreSQL Execution Time)",
+      "input": "remove_user.sql for unassigned ID 1001 with full history",
+      "expected": "No deleted row. The account, profile, and all messages remain."
     },
     "database::users::query_performance_tests::perf_verify_credentials": {
       "id": "perf-verify-credentials",
@@ -1040,7 +1048,7 @@
       "suite": "performance",
       "alias": "Verifies credentials through UserHandler",
       "input": "verify_credentials(\"bench-0001\", \"timing-password\") with the precomputed fixture hash",
-      "expected": "Success with the exact hash for the warm-up and all measured calls; report 20 samples in milliseconds."
+      "expected": "Success with ID 1 for the warm-up and all measured calls; report 20 samples in milliseconds."
     }
   }
 }

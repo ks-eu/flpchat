@@ -40,9 +40,9 @@ const EXPLAIN_SET_HASH: &str = concat!(
 );
 const EXPLAIN_REMOVESELF: &str = concat!(
     "EXPLAIN (ANALYZE, TIMING OFF, FORMAT JSON) ",
-    include_str!("../../src/database/queries/removeself_user.sql"),
+    include_str!("../../src/database/queries/remove_user.sql"),
 );
-const EXPLAIN_LOOKUP: &str = "EXPLAIN (ANALYZE, TIMING OFF, FORMAT JSON) SELECT password_hash FROM users WHERE username = $1";
+const EXPLAIN_LOOKUP: &str = "EXPLAIN (ANALYZE, TIMING OFF, FORMAT JSON) SELECT user_id, password_hash FROM users WHERE username = $1";
 
 async fn seed_accounts(pool: &PgPool, with_history: bool) -> sqlx::Result<()> {
     sqlx::raw_sql(
@@ -321,9 +321,9 @@ postgres_test! {
     }
 }
 
-// Alias: Looks up the target account hash (PostgreSQL Execution Time)
+// Alias: Looks up the target account ID and hash (PostgreSQL Execution Time)
 // Input: Lookup SQL for "bench-0001" in the 1,000-account fixture
-// Expected: Exact precomputed timing-password hash; report Execution Time in milliseconds.
+// Expected: ID 1 and exact precomputed timing-password hash; report Execution Time in milliseconds.
 postgres_test! {
     async fn perf_lookup_sql(pool: PgPool) -> sqlx::Result<()> {
         let pool = transaction_pool(&pool).await?;
@@ -331,9 +331,9 @@ postgres_test! {
         let mut samples = Vec::with_capacity(SAMPLE_COUNT);
         for run in 0..=SAMPLE_COUNT {
             sqlx::query("SAVEPOINT benchmark_sample").execute(&pool).await?;
-            let hash: String = sqlx::query_scalar("SELECT password_hash FROM users WHERE username = $1")
+            let account: (i32, String) = sqlx::query_as("SELECT user_id, password_hash FROM users WHERE username = $1")
                 .bind("bench-0001").fetch_one(&pool).await?;
-            assert_eq!(hash, BENCHMARK_HASH);
+            assert_eq!(account, (1, BENCHMARK_HASH.into()));
             sqlx::raw_sql("ROLLBACK TO SAVEPOINT benchmark_sample; RELEASE SAVEPOINT benchmark_sample").execute(&pool).await?;
 
             sqlx::query("SAVEPOINT benchmark_sample").execute(&pool).await?;
@@ -352,33 +352,23 @@ postgres_test! {
 async fn measure_remove_sql(
     pool: &PgPool,
     with_history: bool,
-    correct_hash: bool,
+    user_id: i32,
     case_id: &'static str,
 ) -> sqlx::Result<()> {
-    let hash = if correct_hash {
-        BENCHMARK_HASH
-    } else {
-        "wrong-hash"
-    };
-    let expected = if correct_hash {
-        (Some(true), Some(1))
-    } else {
-        (Some(false), None)
-    };
+    let expected = (user_id == 1).then_some(1);
     let mut samples = Vec::with_capacity(SAMPLE_COUNT);
     for run in 0..=SAMPLE_COUNT {
         sqlx::query("SAVEPOINT benchmark_sample")
             .execute(pool)
             .await?;
-        let result = sqlx::query_as::<_, (Option<bool>, Option<i32>)>(include_str!(
-            "../../src/database/queries/removeself_user.sql"
+        let result = sqlx::query_scalar::<_, i32>(include_str!(
+            "../../src/database/queries/remove_user.sql"
         ))
-        .bind("bench-0001")
-        .bind(hash)
-        .fetch_one(pool)
+        .bind(user_id)
+        .fetch_optional(pool)
         .await?;
         assert_eq!(result, expected);
-        assert!(removal_state(pool, correct_hash, with_history).await?);
+        assert!(removal_state(pool, expected.is_some(), with_history).await?);
         sqlx::raw_sql("ROLLBACK TO SAVEPOINT benchmark_sample; RELEASE SAVEPOINT benchmark_sample")
             .execute(pool)
             .await?;
@@ -387,10 +377,9 @@ async fn measure_remove_sql(
             .execute(pool)
             .await?;
         let mut args = PgArguments::default();
-        args.add("bench-0001").map_err(sqlx::Error::Encode)?;
-        args.add(hash).map_err(sqlx::Error::Encode)?;
+        args.add(user_id).map_err(sqlx::Error::Encode)?;
         let elapsed_ms = explain_ms(pool, EXPLAIN_REMOVESELF, args).await?;
-        assert!(removal_state(pool, correct_hash, with_history).await?);
+        assert!(removal_state(pool, expected.is_some(), with_history).await?);
         sqlx::raw_sql("ROLLBACK TO SAVEPOINT benchmark_sample; RELEASE SAVEPOINT benchmark_sample")
             .execute(pool)
             .await?;
@@ -403,13 +392,13 @@ async fn measure_remove_sql(
 }
 
 // Alias: Removes an account without message history (PostgreSQL Execution Time)
-// Input: removeself_user.sql for "bench-0001" with the timing-password fixture hash
-// Expected: (Some(true), Some(1)); account/profile are removed and ID 1 stays claimed.
+// Input: remove_user.sql for ID 1
+// Expected: Some(1); account/profile are removed and ID 1 stays claimed.
 postgres_test! {
     async fn perf_remove_empty_sql(pool: PgPool) -> sqlx::Result<()> {
         let pool = transaction_pool(&pool).await?;
         seed_accounts(&pool, false).await?;
-        measure_remove_sql(&pool, false, true, "perf-remove-empty-sql").await?;
+        measure_remove_sql(&pool, false, 1, "perf-remove-empty-sql").await?;
         pool.close().await;
         Ok(())
     }
@@ -519,13 +508,13 @@ postgres_test! {
 }
 
 // Alias: Removes an account with message history (PostgreSQL Execution Time)
-// Input: removeself_user.sql for "bench-0001" with the timing-password fixture hash and full history
-// Expected: (Some(true), Some(1)); target messages are removed and unrelated account-2/account-3 rows survive.
+// Input: remove_user.sql for ID 1 and full history
+// Expected: Some(1); target messages are removed and unrelated account-2/account-3 rows survive.
 postgres_test! {
     async fn perf_remove_history_sql(pool: PgPool) -> sqlx::Result<()> {
         let pool = transaction_pool(&pool).await?;
         seed_accounts(&pool, true).await?;
-        measure_remove_sql(&pool, true, true, "perf-remove-history-sql").await?;
+        measure_remove_sql(&pool, true, 1, "perf-remove-history-sql").await?;
         pool.close().await;
         Ok(())
     }
@@ -540,14 +529,14 @@ postgres_test! {
     }
 }
 
-// Alias: Preserves an account after wrong credentials (PostgreSQL Execution Time)
-// Input: removeself_user.sql for "bench-0001" with "wrong-hash" and full history
-// Expected: (Some(false), None); account/profile/hash, claimed ID, and every target/unrelated message remain.
+// Alias: Attempts deletion of a missing ID (PostgreSQL Execution Time)
+// Input: remove_user.sql for unassigned ID 1001 with full history
+// Expected: No deleted row; account/profile/hash, claimed ID, and every target/unrelated message remain.
 postgres_test! {
-    async fn perf_remove_wrong_sql(pool: PgPool) -> sqlx::Result<()> {
+    async fn perf_remove_missing_sql(pool: PgPool) -> sqlx::Result<()> {
         let pool = transaction_pool(&pool).await?;
         seed_accounts(&pool, true).await?;
-        measure_remove_sql(&pool, true, false, "perf-remove-wrong-sql").await?;
+        measure_remove_sql(&pool, true, 1001, "perf-remove-missing-sql").await?;
         pool.close().await;
         Ok(())
     }
@@ -555,7 +544,7 @@ postgres_test! {
 
 // Alias: Verifies credentials through UserHandler
 // Input: verify_credentials("bench-0001", "timing-password") with the precomputed fixture hash
-// Expected: Success with the exact hash for the warm-up and all measured calls; report 20 samples in milliseconds.
+// Expected: Success with ID 1 for the warm-up and all measured calls; report 20 samples in milliseconds.
 postgres_test! {
     async fn perf_verify_credentials(pool: PgPool) -> sqlx::Result<()> {
         let pool = transaction_pool(&pool).await?;
@@ -567,7 +556,7 @@ postgres_test! {
             let start = Instant::now();
             let result = worker.verify_credentials("bench-0001", TIMING_PASSWORD, Arc::clone(&permit)).await;
             let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
-            assert!(matches!(result, Ok(VerifyResult::Success(hash)) if hash == BENCHMARK_HASH));
+            assert!(matches!(result, Ok(VerifyResult::Success(1))));
             if run > 0 { samples.push(elapsed_ms); }
         }
         report_samples("perf-verify-credentials", &mut samples);
