@@ -3,6 +3,7 @@ mod connection;
 mod limid;
 mod orchestration;
 mod onboarding;
+mod sync;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
