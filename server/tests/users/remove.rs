@@ -1,15 +1,14 @@
 use std::pin::pin;
-use std::sync::Arc;
 use std::time::Duration;
 
 use argon2::{Argon2, PasswordHasher};
 use flpc::unit::ServerUnit;
 use futures_util::{StreamExt, poll};
 use sqlx::{PgPool, types::JsonValue};
-use tokio::{net::TcpListener, sync::Semaphore, time::timeout};
+use tokio::{net::TcpListener, time::timeout};
 
 use super::*;
-use crate::database::{serial_tests::postgres_test, users::UserHandler};
+use crate::database::{serial_tests::postgres_test, users::{UserHandler, run}};
 
 const LIMITS: (usize, usize) = (4, 6);
 const TEST_TIMEOUT: Duration = Duration::from_secs(5);
@@ -74,12 +73,16 @@ async fn run_removal(
     pool: PgPool,
     username: &str,
     password: &str,
-    permit: Arc<Semaphore>,
+    close_permit: bool,
 ) -> u8 {
     timeout(TEST_TIMEOUT, async {
         let (sink, mut peer) = loopback().await;
         let (user_tx, user_rx) = mpsc::channel(1);
-        let worker = tokio::spawn(UserHandler::new(pool, user_rx).run(permit));
+        let handler = UserHandler::new(user_rx, pool, 1);
+        if close_permit {
+            handler.permit().close();
+        }
+        let worker = tokio::spawn(run(handler));
         timeout(
             TEST_TIMEOUT,
             handle_removeself(
@@ -301,7 +304,7 @@ postgres_test! {
             pool.clone(),
             "éé",
             "🔑é",
-            Arc::new(Semaphore::new(1)),
+            false,
         )
         .await;
 
@@ -329,7 +332,7 @@ postgres_test! {
             pool.clone(),
             "user",
             "wrong",
-            Arc::new(Semaphore::new(1)),
+            false,
         )
         .await;
 
@@ -350,7 +353,7 @@ postgres_test! {
             pool.clone(),
             "",
             "secret",
-            Arc::new(Semaphore::new(1)),
+            false,
         )
         .await;
 
@@ -371,7 +374,7 @@ postgres_test! {
             pool.clone(),
             "user",
             "",
-            Arc::new(Semaphore::new(1)),
+            false,
         )
         .await;
 
@@ -392,7 +395,7 @@ postgres_test! {
             pool.clone(),
             "users",
             "secret",
-            Arc::new(Semaphore::new(1)),
+            false,
         )
         .await;
 
@@ -413,7 +416,7 @@ postgres_test! {
             pool.clone(),
             "user",
             "secrets",
-            Arc::new(Semaphore::new(1)),
+            false,
         )
         .await;
 
@@ -434,7 +437,7 @@ postgres_test! {
             pool.clone(),
             "none",
             "secret",
-            Arc::new(Semaphore::new(1)),
+            false,
         )
         .await;
 
@@ -451,9 +454,7 @@ postgres_test! {
     async fn removeself_worker_error(pool: PgPool) -> sqlx::Result<()> {
         seed_account(&pool, "user", "secret").await?;
         let before = target_snapshot(&pool).await?;
-        let permit = Arc::new(Semaphore::new(1));
-        permit.close();
-        let code = run_removal(pool.clone(), "user", "secret", permit).await;
+        let code = run_removal(pool.clone(), "user", "secret", true).await;
 
         assert_eq!(code, 4);
         assert_eq!(target_snapshot(&pool).await?, before);

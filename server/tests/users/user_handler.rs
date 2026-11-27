@@ -1,9 +1,9 @@
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
 use argon2::{Argon2, PasswordHasher};
 use sqlx::PgPool;
 use tokio::{
-    sync::{Semaphore, mpsc, oneshot},
+    sync::{mpsc, oneshot},
     task::JoinHandle,
     time::timeout,
 };
@@ -11,7 +11,7 @@ use tokio::{
 use crate::database::{hash::verify_password, serial_tests::postgres_test};
 
 use super::{
-    LoginRequest, LoginResponse, RegRequest, RegResponse, RemoveSelfRequest, RemoveSelfResponse, UserHandler, UserRequest,
+    LoginRequest, LoginResponse, RegRequest, RegResponse, RemoveSelfRequest, RemoveSelfResponse, UserHandler, UserRequest, run,
 };
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(5);
@@ -49,7 +49,7 @@ async fn seed_account(pool: &PgPool, id: i32, username: &str, hash: &str) -> sql
 fn start_worker(pool: &PgPool) -> (mpsc::Sender<UserRequest>, JoinHandle<()>) {
     let (user_tx, user_rx) = mpsc::channel(4);
     let worker =
-        tokio::spawn(UserHandler::new(pool.clone(), user_rx).run(Arc::new(Semaphore::new(1))));
+        tokio::spawn(run(UserHandler::new(user_rx, pool.clone(), 1)));
     (user_tx, worker)
 }
 
@@ -327,7 +327,7 @@ postgres_test! {
         drop(first);
         let second = queue_registration(&user_tx, "second", "second-password");
         let worker = tokio::spawn(
-            UserHandler::new(pool.clone(), user_rx).run(Arc::new(Semaphore::new(1))),
+            run(UserHandler::new(user_rx, pool.clone(), 1)),
         );
         let result = reply_and_finish(user_tx, worker, second).await;
 
@@ -356,9 +356,9 @@ postgres_test! {
         let reply = queue_registration(&user_tx, "queued", "queued-password");
         drop(user_tx);
 
-        let worker = UserHandler::new(pool.clone(), user_rx);
+        let worker = UserHandler::new(user_rx, pool.clone(), 1);
         let result = timeout(TEST_TIMEOUT, async {
-            tokio::join!(worker.run(Arc::new(Semaphore::new(1))), reply)
+            tokio::join!(run(worker), reply)
         })
         .await
         .expect("worker should drain and exit");
@@ -423,9 +423,9 @@ postgres_test! {
         let hash = Argon2::default().hash_password(b"secret").unwrap().to_string();
         seed_account(&pool, 7, "target", &hash).await?;
         let (user_tx, user_rx) = mpsc::channel(2);
-        let permit = Arc::new(Semaphore::new(1));
-        permit.close();
-        let worker = tokio::spawn(UserHandler::new(pool, user_rx).run(permit));
+        let handler = UserHandler::new(user_rx, pool, 1);
+        handler.permit().close();
+        let worker = tokio::spawn(run(handler));
         let existing = queue_login(&user_tx, "target", "secret");
         let missing = queue_login(&user_tx, "absent", "secret");
 
@@ -455,7 +455,7 @@ postgres_test! {
         drop(queue_login(&user_tx, "target", "secret"));
         let reply = queue_login(&user_tx, "target", "secret");
         let worker = tokio::spawn(
-            UserHandler::new(pool, user_rx).run(Arc::new(Semaphore::new(1))),
+            run(UserHandler::new(user_rx, pool, 1)),
         );
 
         let result = reply_and_finish(user_tx, worker, reply).await;

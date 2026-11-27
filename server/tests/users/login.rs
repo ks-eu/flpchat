@@ -1,12 +1,12 @@
-use std::{pin::pin, sync::Arc, time::Duration};
+use std::{pin::pin, time::Duration};
 
 use argon2::{Argon2, PasswordHasher};
 use flpc::unit::ServerUnit;
 use futures_util::{StreamExt, poll};
 use sqlx::PgPool;
-use tokio::{io::AsyncWriteExt, net::TcpListener, sync::Semaphore, time::timeout};
+use tokio::{io::AsyncWriteExt, net::TcpListener, time::timeout};
 
-use crate::database::{serial_tests::postgres_test, users::UserHandler};
+use crate::database::{serial_tests::postgres_test, users::{UserHandler, run}};
 
 use super::*;
 
@@ -178,7 +178,7 @@ postgres_test! {
         .execute(&pool)
         .await?;
         let (user_tx, user_rx) = mpsc::channel(1);
-        let worker = tokio::spawn(UserHandler::new(pool, user_rx).run(Arc::new(Semaphore::new(1))));
+        let worker = tokio::spawn(run(UserHandler::new(user_rx, pool, 1)));
 
         timeout(TEST_TIMEOUT, async {
             let (sink, mut peer) = login_sink().await;

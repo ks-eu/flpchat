@@ -17,7 +17,7 @@ use tokio::{
 };
 use tokio_util::codec::Framed;
 
-use super::{LoginRequest, LoginResponse, UserHandler, VerifyResult, transaction_pool::transaction_pool};
+use super::{LoginRequest, LoginResponse, UserHandler, VerifyResult, login_user, run, transaction_pool::transaction_pool, verify_credentials};
 use crate::database::serial_tests::postgres_test;
 use crate::database::hash::{hash_password, verify_password};
 use crate::connection::{registration::handle_register, remove::handle_removeself};
@@ -400,7 +400,7 @@ postgres_test! {
     async fn perf_register_tcp(pool: PgPool) -> sqlx::Result<()> {
         seed_accounts(&pool, false).await?;
         let (user_tx, user_rx) = mpsc::channel(1);
-        let worker = tokio::spawn(UserHandler::new(pool.clone(), user_rx).run(Arc::new(Semaphore::new(1))));
+        let worker = tokio::spawn(run(UserHandler::new(user_rx, pool.clone(), 1)));
         let mut samples = Vec::with_capacity(SAMPLE_COUNT);
         for run in 0..=SAMPLE_COUNT {
             let (server, mut peer) = loopback().await;
@@ -447,7 +447,7 @@ async fn measure_remove_tcp(
     seed_accounts(&pool, with_history).await?;
     let (user_tx, user_rx) = mpsc::channel(1);
     let worker =
-        tokio::spawn(UserHandler::new(pool.clone(), user_rx).run(Arc::new(Semaphore::new(1))));
+        tokio::spawn(run(UserHandler::new(user_rx, pool.clone(), 1)));
     let mut samples = Vec::with_capacity(SAMPLE_COUNT);
     for run in 0..=SAMPLE_COUNT {
         let (server, mut peer) = loopback().await;
@@ -538,12 +538,11 @@ postgres_test! {
     async fn perf_verify_credentials(pool: PgPool) -> sqlx::Result<()> {
         let pool = transaction_pool(&pool).await?;
         seed_accounts(&pool, false).await?;
-        let worker = UserHandler::new(pool.clone(), mpsc::channel(1).1);
         let permit = Arc::new(Semaphore::new(1));
         let mut samples = Vec::with_capacity(SAMPLE_COUNT);
         for run in 0..=SAMPLE_COUNT {
             let start = Instant::now();
-            let result = worker.verify_credentials("bench-0001", TIMING_PASSWORD, Arc::clone(&permit)).await;
+            let result = verify_credentials(&pool, "bench-0001", TIMING_PASSWORD, Arc::clone(&permit)).await;
             let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
             assert!(matches!(result, Ok(VerifyResult::Success(1))));
             if run > 0 { samples.push(elapsed_ms); }
@@ -561,7 +560,6 @@ async fn measure_login_user(
     case_id: &str,
 ) -> sqlx::Result<()> {
     seed_accounts(&pool, false).await?;
-    let worker = UserHandler::new(pool, mpsc::channel(1).1);
     let permit = Arc::new(Semaphore::new(1));
     let mut samples = Vec::with_capacity(SAMPLE_COUNT);
     for run in 0..=SAMPLE_COUNT {
@@ -570,7 +568,7 @@ async fn measure_login_user(
         let permit = Arc::clone(&permit);
         let (response, elapsed_ms) = timeout(TCP_TIMEOUT, async {
             let start = Instant::now();
-            worker.login_user(request, permit).await;
+            login_user(&pool, request, permit).await;
             let response = reply_rx.await.expect("login should send a reply");
             (response, start.elapsed().as_secs_f64() * 1000.0)
         })

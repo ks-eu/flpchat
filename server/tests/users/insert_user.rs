@@ -8,7 +8,7 @@ use tokio::{
 use crate::database::{hash::verify_password, serial_tests::postgres_test};
 use crate::connection::registration::RegRequest;
 
-use super::{PgPool, RegResponse, UserHandler, UserRequest};
+use super::{PgPool, RegResponse, UserHandler, UserRequest, insert_user, run};
 
 async fn set_available_ids(pool: &PgPool, ids: &[i32]) -> sqlx::Result<()> {
     sqlx::query("DELETE FROM available_user_ids WHERE NOT (user_id = ANY($1))")
@@ -50,19 +50,15 @@ fn closed_permit() -> Arc<Semaphore> {
     permit
 }
 
-fn handler(pool: &PgPool) -> UserHandler {
-    UserHandler::new(pool.clone(), mpsc::channel(1).1)
-}
-
 async fn insert(
-    handler: &UserHandler,
+    pool: &PgPool,
     username: &str,
     password: &str,
     permit: Arc<Semaphore>,
 ) -> RegResponse {
     let (reply_tx, reply_rx) = oneshot::channel();
     let request = RegRequest::new(username.into(), password.into(), reply_tx);
-    handler.insert_user(request, permit).await;
+    insert_user(pool, request, permit).await;
     reply_rx
         .await
         .expect("insert_user should send one response")
@@ -82,7 +78,7 @@ postgres_test! {
         set_available_ids(&pool, &[7, 42]).await?;
 
         assert!(matches!(
-            insert(&handler(&pool), "new-user", "fixture-password", open_permit()).await,
+            insert(&pool, "new-user", "fixture-password", open_permit()).await,
             RegResponse::Success(7)
         ));
         let account = sqlx::query_as::<_, (i32, String, String)>(
@@ -126,7 +122,7 @@ postgres_test! {
         .await?;
 
         assert!(matches!(
-            insert(&handler(&pool), "taken", "different-password", closed_permit()).await,
+            insert(&pool, "taken", "different-password", closed_permit()).await,
             RegResponse::UsernameExists
         ));
         let account = sqlx::query_as::<_, (i32, String, String)>(
@@ -159,7 +155,7 @@ postgres_test! {
         seed_account(&pool, 7, "taken", "old-hash").await?;
 
         assert!(matches!(
-            insert(&handler(&pool), "taken", "different-password", closed_permit()).await,
+            insert(&pool, "taken", "different-password", closed_permit()).await,
             RegResponse::NotEnoughSpace
         ));
         let account = sqlx::query_as::<_, (i32, String, String)>(
@@ -190,7 +186,7 @@ postgres_test! {
         set_available_ids(&pool, &[65535]).await?;
 
         assert!(matches!(
-            insert(&handler(&pool), "last-user", "fixture-password", open_permit()).await,
+            insert(&pool, "last-user", "fixture-password", open_permit()).await,
             RegResponse::Success(65535)
         ));
         let account = sqlx::query_as::<_, (i32, String, String)>(
@@ -223,7 +219,7 @@ postgres_test! {
         set_available_ids(&pool, &[]).await?;
 
         assert!(matches!(
-            insert(&handler(&pool), "new-user", "fixture-password", closed_permit()).await,
+            insert(&pool, "new-user", "fixture-password", closed_permit()).await,
             RegResponse::NotEnoughSpace
         ));
         assert!(sqlx::query_scalar::<_, bool>(
@@ -246,7 +242,7 @@ postgres_test! {
         set_available_ids(&pool, &[7, 42, 101]).await?;
 
         assert!(matches!(
-            insert(&handler(&pool), "new-user", "fixture-password", open_permit()).await,
+            insert(&pool, "new-user", "fixture-password", open_permit()).await,
             RegResponse::Success(7)
         ));
         let account = sqlx::query_as::<_, (i32, String, String)>(
@@ -289,7 +285,7 @@ postgres_test! {
 
         let response = timeout(
             CLAIM_TIMEOUT,
-            insert(&handler(&pool), "blocked", "fixture-password", Arc::new(Semaphore::new(0))),
+            insert(&pool, "blocked", "fixture-password", Arc::new(Semaphore::new(0))),
         )
         .await
         .expect("profile errors should be returned before acquiring a hashing permit");
@@ -335,9 +331,8 @@ async fn wait_for_claim(pool: &PgPool) -> sqlx::Result<()> {
 postgres_test! {
     async fn insert_hash_failure_reuses_id(pool: PgPool) -> sqlx::Result<()> {
         set_available_ids(&pool, &[7]).await?;
-        let handler = handler(&pool);
         assert!(matches!(
-            insert(&handler, "same", "first", closed_permit()).await,
+            insert(&pool, "same", "first", closed_permit()).await,
             RegResponse::HandlerError
         ));
         assert_eq!(available_ids(&pool).await?, [7]);
@@ -346,7 +341,7 @@ postgres_test! {
         ).fetch_one(&pool).await?;
         assert_eq!(row_counts, (0, 0));
         assert!(matches!(
-            insert(&handler, "same", "second", open_permit()).await,
+            insert(&pool, "same", "second", open_permit()).await,
             RegResponse::Success(7)
         ));
         let hash: String = sqlx::query_scalar("SELECT password_hash FROM users WHERE username = 'same'")
@@ -362,7 +357,7 @@ postgres_test! {
         let (user_tx, user_rx) = mpsc::channel(1);
         let (reply_tx, reply_rx) = oneshot::channel();
         let worker = tokio::spawn(
-            UserHandler::new(pool.clone(), user_rx).run(Arc::new(Semaphore::new(0))),
+            run(UserHandler::new(user_rx, pool.clone(), 0)),
         );
         assert!(user_tx.try_send(UserRequest::RegRequest(
             RegRequest::new("same".into(), "first".into(), reply_tx),
@@ -374,7 +369,7 @@ postgres_test! {
 
         let response = timeout(
             CLAIM_TIMEOUT,
-            insert(&handler(&pool), "same", "second", open_permit()),
+            insert(&pool, "same", "second", open_permit()),
         ).await.expect("retry should acquire the released ID");
         assert!(matches!(response, RegResponse::Success(7)));
         let hash: String = sqlx::query_scalar("SELECT password_hash FROM users WHERE username = 'same'")
@@ -413,11 +408,11 @@ async fn assert_concurrent_duplicate(
     set_available_ids(pool, ids).await?;
     let permit = open_permit();
     let held = Arc::clone(&permit).acquire_owned().await.unwrap();
-    let first = handler(pool);
+    let first = pool.clone();
     let first = tokio::spawn(async move { insert(&first, "same", "first", permit).await });
     wait_for_claim(pool).await?;
 
-    let second = handler(pool);
+    let second = pool.clone();
     let second =
         tokio::spawn(async move { insert(&second, "same", "second", closed_permit()).await });
     wait_for_blocked_insert(pool).await?;
@@ -457,7 +452,7 @@ postgres_test! {
         set_available_ids(&pool, &[7, 8]).await?;
         let permit = open_permit();
         let held = Arc::clone(&permit).acquire_owned().await.unwrap();
-        let first = handler(&pool);
+        let first = pool.clone();
         let first = tokio::spawn(async move { insert(&first, "same", "secret", permit).await });
         wait_for_claim(&pool).await?;
 

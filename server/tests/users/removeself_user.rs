@@ -4,23 +4,23 @@ use argon2::{Argon2, PasswordHasher};
 use futures_util::poll;
 use sqlx::types::JsonValue;
 use tokio::{
-    sync::{Semaphore, mpsc, oneshot},
+    sync::{Semaphore, oneshot},
     time::timeout,
 };
 
 use crate::database::serial_tests::postgres_test;
 
 use super::transaction_pool::transaction_pool;
-use super::{PgPool, RemoveSelfRequest, RemoveSelfResponse, UserHandler, VerifyError, VerifyResult};
+use super::{PgPool, RemoveSelfRequest, RemoveSelfResponse, VerifyError, VerifyResult, get_credentials, removeself_user, verify_credentials};
 
 const VERIFY_TIMEOUT: Duration = Duration::from_secs(5);
 const TARGET_PASSWORD: &str = "timing-password";
 const TARGET_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$bGlnaHRjaGF0LWJlbmNobWFyaw$NG0zwI7kM/Cq+dLLB3HMbPwk1I8NW1iSDPpYPr/ImjU";
 
-async fn remove(handler: &UserHandler, username: &str, password: &str) -> RemoveSelfResponse {
+async fn remove(pool: &PgPool, username: &str, password: &str) -> RemoveSelfResponse {
     let (reply_tx, reply_rx) = oneshot::channel();
     let request = RemoveSelfRequest::new(username.into(), password.into(), reply_tx);
-    handler.removeself_user(request, Arc::new(Semaphore::new(1))).await;
+    removeself_user(pool, request, Arc::new(Semaphore::new(1))).await;
     reply_rx.await.expect("removeself_user should send one response")
 }
 
@@ -150,9 +150,8 @@ async fn seed_lookup_account(pool: &PgPool, username: &str, hash: &str) -> sqlx:
 postgres_test! {
     async fn lookup_exact_upper(pool: PgPool) -> sqlx::Result<()> {
         seed_lookup_accounts(&pool).await?;
-        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
 
-        assert_eq!(handler.get_credentials("O'Reilly").await?, Some((7, "hash-upper".into())));
+        assert_eq!(get_credentials(&pool, "O'Reilly").await?, Some((7, "hash-upper".into())));
         Ok(())
     }
 }
@@ -163,9 +162,8 @@ postgres_test! {
 postgres_test! {
     async fn lookup_exact_lower(pool: PgPool) -> sqlx::Result<()> {
         seed_lookup_accounts(&pool).await?;
-        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
 
-        assert_eq!(handler.get_credentials("o'reilly").await?, Some((8, "hash-lower".into())));
+        assert_eq!(get_credentials(&pool, "o'reilly").await?, Some((8, "hash-lower".into())));
         Ok(())
     }
 }
@@ -176,9 +174,8 @@ postgres_test! {
 postgres_test! {
     async fn lookup_missing(pool: PgPool) -> sqlx::Result<()> {
         seed_lookup_accounts(&pool).await?;
-        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
 
-        assert_eq!(handler.get_credentials("O'Reill").await?, None);
+        assert_eq!(get_credentials(&pool, "O'Reill").await?, None);
         Ok(())
     }
 }
@@ -189,9 +186,8 @@ postgres_test! {
 postgres_test! {
     async fn lookup_raw(pool: PgPool) -> sqlx::Result<()> {
         seed_lookup_account(&pool, "account", "invalid-phc").await?;
-        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
 
-        assert_eq!(handler.get_credentials("account").await?, Some((7, "invalid-phc".into())));
+        assert_eq!(get_credentials(&pool, "account").await?, Some((7, "invalid-phc".into())));
         Ok(())
     }
 }
@@ -202,11 +198,10 @@ postgres_test! {
 postgres_test! {
     async fn lookup_closed(pool: PgPool) -> sqlx::Result<()> {
         seed_lookup_account(&pool, "account", "invalid-phc").await?;
-        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
         pool.close().await;
 
         assert!(matches!(
-            handler.get_credentials("account").await,
+            get_credentials(&pool, "account").await,
             Err(sqlx::Error::PoolClosed)
         ));
         Ok(())
@@ -222,10 +217,9 @@ postgres_test! {
         let permit = Arc::new(Semaphore::new(1));
         let hash = Argon2::default().hash_password("café🔑".as_bytes()).unwrap().to_string();
         seed_verify_account(&pool, &hash).await?;
-        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
 
         assert!(matches!(
-            handler.verify_credentials("account", "café🔑", Arc::clone(&permit)).await,
+            verify_credentials(&pool, "account", "café🔑", Arc::clone(&permit)).await,
             Ok(VerifyResult::Success(7))
         ));
         assert_eq!(permit.available_permits(), 1);
@@ -244,10 +238,9 @@ postgres_test! {
         let permit = Arc::new(Semaphore::new(1));
         let hash = Argon2::default().hash_password("café🔑".as_bytes()).unwrap().to_string();
         seed_verify_account(&pool, &hash).await?;
-        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
 
         assert!(matches!(
-            handler.verify_credentials("account", "wrong", Arc::clone(&permit)).await,
+            verify_credentials(&pool, "account", "wrong", Arc::clone(&permit)).await,
             Ok(VerifyResult::WrongCredentials)
         ));
         assert_eq!(permit.available_permits(), 1);
@@ -266,10 +259,9 @@ postgres_test! {
         let permit = Arc::new(Semaphore::new(1));
         let hash = Argon2::default().hash_password("café🔑".as_bytes()).unwrap().to_string();
         seed_verify_account(&pool, &hash).await?;
-        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
 
         assert!(matches!(
-            handler.verify_credentials("account", "cafe\u{301}🔑", Arc::clone(&permit)).await,
+            verify_credentials(&pool, "account", "cafe\u{301}🔑", Arc::clone(&permit)).await,
             Ok(VerifyResult::WrongCredentials)
         ));
         assert_eq!(permit.available_permits(), 1);
@@ -288,10 +280,9 @@ postgres_test! {
         let permit = Arc::new(Semaphore::new(1));
         let hash = Argon2::default().hash_password("café🔑".as_bytes()).unwrap().to_string();
         seed_verify_account(&pool, &hash).await?;
-        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
 
         assert!(matches!(
-            handler.verify_credentials("account", &hash, Arc::clone(&permit)).await,
+            verify_credentials(&pool, "account", &hash, Arc::clone(&permit)).await,
             Ok(VerifyResult::WrongCredentials)
         ));
         assert_eq!(permit.available_permits(), 1);
@@ -311,10 +302,9 @@ postgres_test! {
         permit.close();
         let hash = Argon2::default().hash_password("café🔑".as_bytes()).unwrap().to_string();
         seed_verify_account(&pool, &hash).await?;
-        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
 
         assert!(matches!(
-            handler.verify_credentials("absent", "café🔑", Arc::clone(&permit)).await,
+            verify_credentials(&pool, "absent", "café🔑", Arc::clone(&permit)).await,
             Ok(VerifyResult::UsernameNotFound)
         ));
         assert!(permit.is_closed());
@@ -333,10 +323,9 @@ postgres_test! {
         let pool = transaction_pool(&pool).await?;
         let permit = Arc::new(Semaphore::new(1));
         seed_verify_account(&pool, "invalid-phc").await?;
-        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
 
         assert!(matches!(
-            handler.verify_credentials("account", "café🔑", Arc::clone(&permit)).await,
+            verify_credentials(&pool, "account", "café🔑", Arc::clone(&permit)).await,
             Err(VerifyError::Argon2Error)
         ));
         assert_eq!(permit.available_permits(), 1);
@@ -359,10 +348,9 @@ postgres_test! {
             .to_string()
             .replace("$argon2id$", "$scrypt$");
         seed_verify_account(&pool, &hash).await?;
-        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
 
         assert!(matches!(
-            handler.verify_credentials("account", "café🔑", Arc::clone(&permit)).await,
+            verify_credentials(&pool, "account", "café🔑", Arc::clone(&permit)).await,
             Err(VerifyError::Argon2Error)
         ));
         assert_eq!(permit.available_permits(), 1);
@@ -381,11 +369,11 @@ postgres_test! {
         let permit = Arc::new(Semaphore::new(1));
         let hash = Argon2::default().hash_password("café🔑".as_bytes()).unwrap().to_string();
         seed_verify_account(&pool, &hash).await?;
-        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
         let held_permit = permit.clone().acquire_owned().await.unwrap();
         let held_connection = pool.acquire().await?;
 
-        let mut verification = pin!(handler.verify_credentials(
+        let mut verification = pin!(verify_credentials(
+            &pool,
             "account", "café🔑", Arc::clone(&permit),
         ));
         assert!(poll!(verification.as_mut()).is_pending());
@@ -434,10 +422,9 @@ postgres_test! {
         let hash = Argon2::default().hash_password("café🔑".as_bytes()).unwrap().to_string();
         seed_verify_account(&pool, &hash).await?;
         permit.close();
-        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
 
         assert!(matches!(
-            handler.verify_credentials("account", "café🔑", Arc::clone(&permit)).await,
+            verify_credentials(&pool, "account", "café🔑", Arc::clone(&permit)).await,
             Err(VerifyError::PermitError)
         ));
 
@@ -454,11 +441,10 @@ postgres_test! {
         let pool = transaction_pool(&pool).await?;
         let hash = Argon2::default().hash_password("café🔑".as_bytes()).unwrap().to_string();
         seed_verify_account(&pool, &hash).await?;
-        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
         pool.close().await;
 
         assert!(matches!(
-            handler.verify_credentials("account", "café🔑", Arc::new(Semaphore::new(1))).await,
+            verify_credentials(&pool, "account", "café🔑", Arc::new(Semaphore::new(1))).await,
             Err(VerifyError::SqlxError)
         ));
         Ok(())
@@ -471,10 +457,9 @@ postgres_test! {
 postgres_test! {
     async fn remove_match(pool: PgPool) -> sqlx::Result<()> {
         seed_removal_fixture(&pool).await?;
-        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
 
         assert!(matches!(
-            remove(&handler, "target", TARGET_PASSWORD).await,
+            remove(&pool, "target", TARGET_PASSWORD).await,
             RemoveSelfResponse::Success(7)
         ));
         let users = sqlx::query_as::<_, (i32, String, String)>(
@@ -523,10 +508,9 @@ postgres_test! {
         .execute(&pool)
         .await?;
         let before = snapshot(&pool).await?;
-        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
 
         assert!(matches!(
-            remove(&handler, "target", "wrong").await,
+            remove(&pool, "target", "wrong").await,
             RemoveSelfResponse::WrongCredentials
         ));
         assert_eq!(snapshot(&pool).await?, before);
@@ -542,10 +526,9 @@ postgres_test! {
     async fn remove_missing(pool: PgPool) -> sqlx::Result<()> {
         seed_removal_fixture(&pool).await?;
         let before = snapshot(&pool).await?;
-        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
 
         assert!(matches!(
-            remove(&handler, "missing", TARGET_PASSWORD).await,
+            remove(&pool, "missing", TARGET_PASSWORD).await,
             RemoveSelfResponse::UserNotFound
         ));
         assert_eq!(snapshot(&pool).await?, before);
@@ -560,14 +543,13 @@ postgres_test! {
 postgres_test! {
     async fn remove_twice(pool: PgPool) -> sqlx::Result<()> {
         seed_removal_fixture(&pool).await?;
-        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
 
         assert!(matches!(
-            remove(&handler, "target", TARGET_PASSWORD).await,
+            remove(&pool, "target", TARGET_PASSWORD).await,
             RemoveSelfResponse::Success(7)
         ));
         assert!(matches!(
-            remove(&handler, "target", TARGET_PASSWORD).await,
+            remove(&pool, "target", TARGET_PASSWORD).await,
             RemoveSelfResponse::UserNotFound
         ));
         let users = sqlx::query_as::<_, (i32, String, String)>(
@@ -609,9 +591,8 @@ postgres_test! {
 postgres_test! {
     async fn remove_recreated(pool: PgPool) -> sqlx::Result<()> {
         seed_removal_fixture(&pool).await?;
-        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
         assert!(matches!(
-            remove(&handler, "target", TARGET_PASSWORD).await,
+            remove(&pool, "target", TARGET_PASSWORD).await,
             RemoveSelfResponse::Success(7)
         ));
         sqlx::query("DELETE FROM available_user_ids WHERE user_id = 10")
@@ -630,7 +611,7 @@ postgres_test! {
             .await?;
 
         assert!(matches!(
-            remove(&handler, "target", TARGET_PASSWORD).await,
+            remove(&pool, "target", TARGET_PASSWORD).await,
             RemoveSelfResponse::WrongCredentials
         ));
         assert_eq!(
@@ -650,7 +631,7 @@ postgres_test! {
             10
         );
         assert!(matches!(
-            remove(&handler, "target", "replacement").await,
+            remove(&pool, "target", "replacement").await,
             RemoveSelfResponse::Success(10)
         ));
         let final_state = snapshot(&pool).await?;
@@ -686,10 +667,9 @@ postgres_test! {
         sqlx::query("INSERT INTO user_information (user_id, username) VALUES (65535, 'last-user')")
             .execute(&pool)
             .await?;
-        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
 
         assert!(matches!(
-            remove(&handler, "last-user", TARGET_PASSWORD).await,
+            remove(&pool, "last-user", TARGET_PASSWORD).await,
             RemoveSelfResponse::Success(65535)
         ));
         let final_state = snapshot(&pool).await?;
@@ -712,10 +692,9 @@ postgres_test! {
         )
         .execute(&pool)
         .await?;
-        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
 
         assert!(matches!(
-            remove(&handler, "target", TARGET_PASSWORD).await,
+            remove(&pool, "target", TARGET_PASSWORD).await,
             RemoveSelfResponse::Success(7)
         ));
         assert!(!sqlx::query_scalar::<_, bool>(
@@ -748,10 +727,9 @@ postgres_test! {
         )
         .execute(&pool)
         .await?;
-        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
 
         assert!(matches!(
-            remove(&handler, "target", TARGET_PASSWORD).await,
+            remove(&pool, "target", TARGET_PASSWORD).await,
             RemoveSelfResponse::Success(7)
         ));
         assert_eq!(
@@ -779,10 +757,9 @@ postgres_test! {
         )
         .execute(&pool)
         .await?;
-        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
 
         assert!(matches!(
-            remove(&handler, "target", TARGET_PASSWORD).await,
+            remove(&pool, "target", TARGET_PASSWORD).await,
             RemoveSelfResponse::Success(7)
         ));
         assert_eq!(
@@ -821,9 +798,8 @@ postgres_test! {
             .execute(&pool)
             .await?;
         let before = snapshot(&pool).await?;
-        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
 
-        let response = remove(&handler, "target", TARGET_PASSWORD).await;
+        let response = remove(&pool, "target", TARGET_PASSWORD).await;
         assert!(matches!(response, RemoveSelfResponse::HandlerError));
         assert_eq!(snapshot(&pool).await?, before);
 
@@ -835,13 +811,12 @@ postgres_test! {
     async fn remove_stale_id(pool: PgPool) -> sqlx::Result<()> {
         let pool = transaction_pool(&pool).await?;
         seed_removal_fixture(&pool).await?;
-        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1);
         let permit = Arc::new(Semaphore::new(1));
         let held_permit = Arc::clone(&permit).acquire_owned().await.unwrap();
         let held_connection = pool.acquire().await?;
         let (reply_tx, reply_rx) = oneshot::channel();
         let request = RemoveSelfRequest::new("target".into(), TARGET_PASSWORD.into(), reply_tx);
-        let mut removal = pin!(handler.removeself_user(request, permit));
+        let mut removal = pin!(removeself_user(&pool, request, permit));
         assert!(poll!(removal.as_mut()).is_pending());
 
         let mut acquire = pin!(pool.acquire());

@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
 use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use flpc::{
@@ -9,12 +9,12 @@ use futures_util::StreamExt;
 use sqlx::{PgPool, postgres::PgPoolOptions, types::JsonValue};
 use tokio::{
     net::{TcpListener, TcpStream},
-    sync::{Semaphore, mpsc},
+    sync::mpsc,
     time::timeout,
 };
 use tokio_util::codec::Framed;
 
-use crate::database::{serial_tests::postgres_test, users::UserHandler};
+use crate::database::{serial_tests::postgres_test, users::{UserHandler, run}};
 
 use super::handle_register;
 
@@ -79,7 +79,7 @@ async fn snapshot(pool: &PgPool) -> sqlx::Result<RegistrationSnapshot> {
 async fn registration_outcome(
     worker_pool: PgPool,
     request: Register,
-    hash_permit: Arc<Semaphore>,
+    close_permit: bool,
 ) -> u8 {
     timeout(TEST_TIMEOUT, async {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
@@ -90,8 +90,11 @@ async fn registration_outcome(
         let (sink, _) = Framed::new(server, FlpcCodec).split();
         let mut peer = Framed::new(peer, FlpcCodec);
         let (user_tx, user_rx) = mpsc::channel(1);
-        let worker =
-            tokio::spawn(UserHandler::new(worker_pool, user_rx).run(hash_permit));
+        let handler = UserHandler::new(user_rx, worker_pool, 1);
+        if close_permit {
+            handler.permit().close();
+        }
+        let worker = tokio::spawn(run(handler));
         let handler = handle_register(
             request,
             user_tx.clone(),
@@ -131,7 +134,7 @@ postgres_test! {
         let code = registration_outcome(
             pool.clone(),
             Register::new(SERVER_TOKEN.into(), "éé".into(), "🔑é".into()),
-            Arc::new(Semaphore::new(1)),
+            false,
         )
         .await;
 
@@ -174,7 +177,7 @@ postgres_test! {
         let code = registration_outcome(
             pool.clone(),
             Register::new("wrong".into(), "".into(), "".into()),
-            Arc::new(Semaphore::new(1)),
+            false,
         )
         .await;
 
@@ -194,7 +197,7 @@ postgres_test! {
         let code = registration_outcome(
             pool.clone(),
             Register::new(SERVER_TOKEN.into(), "".into(), "secret".into()),
-            Arc::new(Semaphore::new(1)),
+            false,
         )
         .await;
 
@@ -214,7 +217,7 @@ postgres_test! {
         let code = registration_outcome(
             pool.clone(),
             Register::new(SERVER_TOKEN.into(), "user".into(), "".into()),
-            Arc::new(Semaphore::new(1)),
+            false,
         )
         .await;
 
@@ -234,7 +237,7 @@ postgres_test! {
         let code = registration_outcome(
             pool.clone(),
             Register::new(SERVER_TOKEN.into(), "users".into(), "secret".into()),
-            Arc::new(Semaphore::new(1)),
+            false,
         )
         .await;
 
@@ -254,7 +257,7 @@ postgres_test! {
         let code = registration_outcome(
             pool.clone(),
             Register::new(SERVER_TOKEN.into(), "user".into(), "secrets".into()),
-            Arc::new(Semaphore::new(1)),
+            false,
         )
         .await;
 
@@ -275,7 +278,7 @@ postgres_test! {
         let code = registration_outcome(
             pool.clone(),
             Register::new(SERVER_TOKEN.into(), "user".into(), "secret".into()),
-            Arc::new(Semaphore::new(1)),
+            false,
         )
         .await;
 
@@ -296,7 +299,7 @@ postgres_test! {
         let code = registration_outcome(
             pool.clone(),
             Register::new(SERVER_TOKEN.into(), "user".into(), "secret".into()),
-            Arc::new(Semaphore::new(1)),
+            false,
         )
         .await;
 
@@ -313,12 +316,10 @@ postgres_test! {
     async fn register_hash_error(pool: PgPool) -> sqlx::Result<()> {
         set_available_ids(&pool, &[7, 8]).await?;
         let before = snapshot(&pool).await?;
-        let permit = Arc::new(Semaphore::new(1));
-        permit.close();
         let code = registration_outcome(
             pool.clone(),
             Register::new(SERVER_TOKEN.into(), "user".into(), "secret".into()),
-            permit,
+            true,
         )
         .await;
 
@@ -342,7 +343,7 @@ postgres_test! {
         let code = registration_outcome(
             worker_pool,
             Register::new(SERVER_TOKEN.into(), "user".into(), "secret".into()),
-            Arc::new(Semaphore::new(1)),
+            false,
         )
         .await;
 
