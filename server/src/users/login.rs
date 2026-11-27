@@ -73,7 +73,7 @@ pub async fn handle_login(
         max_len_username,
         max_len_password,
     ) {
-        let _ = send_serverlogin(2, sink);
+        let _ = send_serverlogin(2, sink).await;
         None
     } else {
         match try_verify(
@@ -83,21 +83,19 @@ pub async fn handle_login(
         ).await {
             LoginResponse::Success(id) => Some((id, sink)),
             LoginResponse::WrongCredentials => {
-                let _ = send_serverlogin(1, sink);
+                let _ = send_serverlogin(1, sink).await;
                 None
             }
             LoginResponse::UserNotFound => {
-                let _ = send_serverlogin(3, sink);
+                let _ = send_serverlogin(3, sink).await;
                 None
             }
             LoginResponse::HandlerError => {
-                let _ = send_serverlogin(4, sink);
+                let _ = send_serverlogin(4, sink).await;
                 None
             }
         }
-    }
-
-    
+    } 
 }
 
 async fn try_verify(
