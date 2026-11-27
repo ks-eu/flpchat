@@ -57,7 +57,7 @@
       "inputs": "&self, request: LoginRequest, permit: Arc<Semaphore>"
     },
     "handle-login": {
-      "title": "handle_login",
+      "title": "handle_login_verification",
       "inputs": "request: Login, user_tx: Sender<UserRequest>, sink: FlpcSink, max_len_username: usize, max_len_password: usize"
     },
     "try-verify": {
@@ -1106,7 +1106,7 @@
       "input": "Two queued valid logins with the first reply receiver dropped",
       "expected": "The second request receives Success(7)."
     },
-    "connection::login::tests::handle_login_returns_id_and_sink": {
+    "connection::login::tests::handle_login_verification_returns_id_and_sink": {
       "id": "login-returns-id-and-sink",
       "component": "handle-login",
       "suite": "regular",
@@ -1114,7 +1114,7 @@
       "input": "UTF-8 credentials at both byte limits with a real worker and PostgreSQL account 65535",
       "expected": "Returns ID 65535. The peer receives only the frame written by the caller through the returned sink."
     },
-    "connection::login::tests::handle_login_invalid_lengths_skip_worker": {
+    "connection::login::tests::handle_login_verification_invalid_lengths_skip_worker": {
       "id": "login-invalid-lengths",
       "component": "handle-login",
       "suite": "regular",
@@ -1122,7 +1122,7 @@
       "input": "Empty and one-byte-over-limit usernames and passwords",
       "expected": "None, no queued login, and code 2."
     },
-    "connection::login::tests::handle_login_wrong_credentials": {
+    "connection::login::tests::handle_login_verification_wrong_credentials": {
       "id": "login-wrong-credentials",
       "component": "handle-login",
       "suite": "regular",
@@ -1130,7 +1130,7 @@
       "input": "Worker replies WrongCredentials",
       "expected": "None and code 1."
     },
-    "connection::login::tests::handle_login_missing_user": {
+    "connection::login::tests::handle_login_verification_missing_user": {
       "id": "login-missing-user",
       "component": "handle-login",
       "suite": "regular",
@@ -1138,7 +1138,7 @@
       "input": "Worker replies UserNotFound",
       "expected": "None and code 3."
     },
-    "connection::login::tests::handle_login_worker_error": {
+    "connection::login::tests::handle_login_verification_worker_error": {
       "id": "login-worker-error",
       "component": "handle-login",
       "suite": "regular",
@@ -1146,7 +1146,7 @@
       "input": "Worker replies HandlerError",
       "expected": "None and code 4."
     },
-    "connection::login::tests::handle_login_dropped_reply": {
+    "connection::login::tests::handle_login_verification_dropped_reply": {
       "id": "login-dropped-reply",
       "component": "handle-login",
       "suite": "regular",
@@ -1154,7 +1154,7 @@
       "input": "Drop the queued login without replying",
       "expected": "None and code 4."
     },
-    "connection::login::tests::handle_login_closed_worker": {
+    "connection::login::tests::handle_login_verification_closed_worker": {
       "id": "login-closed-worker",
       "component": "handle-login",
       "suite": "regular",

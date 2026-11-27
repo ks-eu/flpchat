@@ -164,7 +164,7 @@ async fn assert_login_frame(peer: &mut Framed<TcpStream, FlpcCodec>, expected: u
 }
 
 postgres_test! {
-    async fn handle_login_returns_id_and_sink(pool: PgPool) -> sqlx::Result<()> {
+    async fn handle_login_verification_returns_id_and_sink(pool: PgPool) -> sqlx::Result<()> {
         let hash = Argon2::default().hash_password(PASSWORD.as_bytes()).unwrap().to_string();
         sqlx::query("DELETE FROM available_user_ids WHERE user_id = 65535")
             .execute(&pool)
@@ -182,7 +182,7 @@ postgres_test! {
 
         timeout(TEST_TIMEOUT, async {
             let (sink, mut peer) = login_sink().await;
-            let (id, mut returned_sink) = handle_login(
+            let (id, mut returned_sink) = handle_login_verification(
                 Login::new(USERNAME.into(), PASSWORD.into()),
                 user_tx,
                 sink,
@@ -204,7 +204,7 @@ postgres_test! {
 }
 
 #[tokio::test]
-async fn handle_login_invalid_lengths_skip_worker() {
+async fn handle_login_verification_invalid_lengths_skip_worker() {
     timeout(TEST_TIMEOUT, async {
         for (username, password) in [
             ("", PASSWORD),
@@ -215,7 +215,7 @@ async fn handle_login_invalid_lengths_skip_worker() {
             let (sink, mut peer) = login_sink().await;
             let (user_tx, mut user_rx) = mpsc::channel(1);
             let (result, ()) = tokio::join!(
-                handle_login(
+                handle_login_verification(
                     Login::new(username.into(), password.into()),
                     user_tx,
                     sink,
@@ -241,7 +241,7 @@ async fn assert_login_rejected(reply: Option<LoginResponse>, expected: u8) {
     timeout(TEST_TIMEOUT, async {
         let (sink, mut peer) = login_sink().await;
         let (user_tx, mut user_rx) = mpsc::channel(1);
-        let mut caller = pin!(handle_login(
+        let mut caller = pin!(handle_login_verification(
             Login::new(USERNAME.into(), PASSWORD.into()),
             user_tx,
             sink,
@@ -263,32 +263,32 @@ async fn assert_login_rejected(reply: Option<LoginResponse>, expected: u8) {
 }
 
 #[tokio::test]
-async fn handle_login_wrong_credentials() {
+async fn handle_login_verification_wrong_credentials() {
     assert_login_rejected(Some(LoginResponse::WrongCredentials), 1).await;
 }
 
 #[tokio::test]
-async fn handle_login_missing_user() {
+async fn handle_login_verification_missing_user() {
     assert_login_rejected(Some(LoginResponse::UserNotFound), 3).await;
 }
 
 #[tokio::test]
-async fn handle_login_worker_error() {
+async fn handle_login_verification_worker_error() {
     assert_login_rejected(Some(LoginResponse::HandlerError), 4).await;
 }
 
 #[tokio::test]
-async fn handle_login_dropped_reply() {
+async fn handle_login_verification_dropped_reply() {
     assert_login_rejected(None, 4).await;
 }
 
 #[tokio::test]
-async fn handle_login_closed_worker() {
+async fn handle_login_verification_closed_worker() {
     timeout(TEST_TIMEOUT, async {
         let (sink, mut peer) = login_sink().await;
         let (user_tx, user_rx) = mpsc::channel(1);
         drop(user_rx);
-        let result = handle_login(
+        let result = handle_login_verification(
             Login::new(USERNAME.into(), PASSWORD.into()),
             user_tx,
             sink,
