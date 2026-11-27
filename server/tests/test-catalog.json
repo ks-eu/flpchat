@@ -39,6 +39,10 @@
     "handle-register": {
       "title": "handle_register",
       "inputs": "request: Register, user_tx: Sender<UserRequest>, hash_permit: Arc<Semaphore>, sink: FlpcSink, server_token: &str, max_len_username: usize, max_len_password: usize"
+    },
+    "check-token": {
+      "title": "check_token",
+      "inputs": "request: &Register, server_token: &str"
     }
   },
   "cases": {
@@ -609,6 +613,62 @@
       "alias": "Reports a worker database failure",
       "input": "Closed worker pool, open hashing semaphore, (\"token\", \"user\", \"secret\")",
       "expected": "Code 5. Account, profile, and available IDs remain unchanged."
+    },
+    "users::registration::check_token_tests::token_exact": {
+      "id": "token-exact",
+      "component": "check-token",
+      "suite": "regular",
+      "alias": "Accepts exact match",
+      "input": "request token \"secret\", server token \"secret\"",
+      "expected": "false."
+    },
+    "users::registration::check_token_tests::token_different": {
+      "id": "token-different",
+      "component": "check-token",
+      "suite": "regular",
+      "alias": "Rejects different content",
+      "input": "request token \"wrong\", server token \"secret\"",
+      "expected": "true."
+    },
+    "users::registration::check_token_tests::token_case": {
+      "id": "token-case",
+      "component": "check-token",
+      "suite": "regular",
+      "alias": "Rejects case difference",
+      "input": "request token \"Secret\", server token \"secret\"",
+      "expected": "true."
+    },
+    "users::registration::check_token_tests::token_space": {
+      "id": "token-space",
+      "component": "check-token",
+      "suite": "regular",
+      "alias": "Rejects extra whitespace",
+      "input": "request token \"secret \", server token \"secret\"",
+      "expected": "true."
+    },
+    "users::registration::check_token_tests::token_empty_request": {
+      "id": "token-empty-request",
+      "component": "check-token",
+      "suite": "regular",
+      "alias": "Rejects empty request token",
+      "input": "request token \"\", server token \"secret\"",
+      "expected": "true."
+    },
+    "users::registration::check_token_tests::token_empty_server": {
+      "id": "token-empty-server",
+      "component": "check-token",
+      "suite": "regular",
+      "alias": "Rejects a nonmatching configured empty token",
+      "input": "request token \"secret\", server token \"\"",
+      "expected": "true."
+    },
+    "users::registration::check_token_tests::token_both_empty": {
+      "id": "token-both-empty",
+      "component": "check-token",
+      "suite": "regular",
+      "alias": "Accepts matching empty tokens",
+      "input": "request token \"\", server token \"\"",
+      "expected": "false."
     }
   }
 }
