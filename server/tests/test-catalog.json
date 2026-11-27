@@ -31,6 +31,10 @@
     "verify-credentials": {
       "title": "UserHandler::verify_credentials",
       "inputs": "&self, username: &str, password: &str"
+    },
+    "lookup-password": {
+      "title": "UserHandler::get_hashed_password",
+      "inputs": "&self, username: &str"
     }
   },
   "cases": {
@@ -481,6 +485,46 @@
       "alias": "Reports lookup failure",
       "input": "Close V's pool, then call (\"account\", \"café🔑\")",
       "expected": "Err(VerifyError::SqlxError)."
+    },
+    "database::users::removeself_user_tests::lookup_exact_upper": {
+      "id": "lookup-exact-upper",
+      "component": "lookup-password",
+      "suite": "regular",
+      "alias": "Looks up the exact quoted username",
+      "input": "account(7, \"O'Reilly\", \"hash-upper\"), account(8, \"o'reilly\", \"hash-lower\"), input \"O'Reilly\"",
+      "expected": "Ok(Some(\"hash-upper\"))."
+    },
+    "database::users::removeself_user_tests::lookup_exact_lower": {
+      "id": "lookup-exact-lower",
+      "component": "lookup-password",
+      "suite": "regular",
+      "alias": "Distinguishes username case",
+      "input": "Same account fixture, input \"o'reilly\"",
+      "expected": "Ok(Some(\"hash-lower\"))."
+    },
+    "database::users::removeself_user_tests::lookup_missing": {
+      "id": "lookup-missing",
+      "component": "lookup-password",
+      "suite": "regular",
+      "alias": "Returns none for a near match",
+      "input": "Same account fixture, input \"O'Reill\"",
+      "expected": "Ok(None)."
+    },
+    "database::users::removeself_user_tests::lookup_raw": {
+      "id": "lookup-raw",
+      "component": "lookup-password",
+      "suite": "regular",
+      "alias": "Returns the stored string unchanged",
+      "input": "account(7, \"account\", \"invalid-phc\"), input \"account\"",
+      "expected": "Ok(Some(\"invalid-phc\"))."
+    },
+    "database::users::removeself_user_tests::lookup_closed": {
+      "id": "lookup-closed",
+      "component": "lookup-password",
+      "suite": "regular",
+      "alias": "Returns the pool error",
+      "input": "Closed pool, input \"account\"",
+      "expected": "Err(sqlx::Error::PoolClosed)."
     }
   }
 }

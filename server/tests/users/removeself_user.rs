@@ -11,9 +11,8 @@ use tokio::{
 use crate::database::serial_tests::postgres_test;
 
 use super::transaction_pool::{delete_completed, track_completed_deletes, transaction_pool};
-use super::{PgPool, RegResponse, RemoveSelfResponse, UserHandler, VerifyError, VerifyResult};
+use super::{PgPool, RemoveSelfResponse, UserHandler, VerifyError, VerifyResult};
 
-const FIXTURE_HASH: &str = "fixture-hash";
 const VERIFY_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, PartialEq)]
@@ -83,13 +82,6 @@ async fn snapshot(pool: &PgPool) -> sqlx::Result<DatabaseSnapshot> {
     })
 }
 
-async fn register_user(handler: &UserHandler, username: &str, hashed_password: &str) -> u16 {
-    let RegResponse::Success(user_id) = handler.insert_user(username, hashed_password).await else {
-        panic!("failed to register fixture user {username}");
-    };
-    user_id
-}
-
 async fn seed_verify_account(pool: &PgPool, hash: &str) -> sqlx::Result<()> {
     sqlx::query("DELETE FROM available_user_ids WHERE user_id = 7")
         .execute(pool)
@@ -107,24 +99,106 @@ async fn seed_verify_account(pool: &PgPool, hash: &str) -> sqlx::Result<()> {
     Ok(())
 }
 
+async fn seed_lookup_accounts(pool: &PgPool) -> sqlx::Result<()> {
+    sqlx::query("DELETE FROM available_user_ids WHERE user_id IN (7, 8)")
+        .execute(pool)
+        .await?;
+    sqlx::raw_sql(
+        "INSERT INTO users (user_id, username, password_hash)
+         OVERRIDING SYSTEM VALUE
+         VALUES (7, 'O''Reilly', 'hash-upper'), (8, 'o''reilly', 'hash-lower');
+         INSERT INTO user_information (user_id, username)
+         VALUES (7, 'O''Reilly'), (8, 'o''reilly');",
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+async fn seed_lookup_account(pool: &PgPool, username: &str, hash: &str) -> sqlx::Result<()> {
+    sqlx::query("DELETE FROM available_user_ids WHERE user_id = 7")
+        .execute(pool)
+        .await?;
+    sqlx::query(
+        "INSERT INTO users (user_id, username, password_hash)
+         OVERRIDING SYSTEM VALUE VALUES (7, $1, $2)",
+    )
+    .bind(username)
+    .bind(hash)
+    .execute(pool)
+    .await?;
+    sqlx::query("INSERT INTO user_information (user_id, username) VALUES (7, $1)")
+        .bind(username)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+// Alias: Looks up the exact quoted username
+// Input: account(7, "O'Reilly", "hash-upper"), account(8, "o'reilly", "hash-lower"), input "O'Reilly"
+// Expected: Ok(Some("hash-upper")).
 postgres_test! {
-    async fn get_hashed_password_matches_exact_username(pool: PgPool) -> sqlx::Result<()> {
-        let pool = transaction_pool(&pool).await?;
+    async fn lookup_exact_upper(pool: PgPool) -> sqlx::Result<()> {
+        seed_lookup_accounts(&pool).await?;
         let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1, Arc::new(Semaphore::new(1)));
-        register_user(&handler, "O'Reilly", FIXTURE_HASH).await;
-        register_user(&handler, "o'reilly", "other-hash").await;
 
-        assert_eq!(
-            handler.get_hashed_password("O'Reilly").await?.as_deref(),
-            Some(FIXTURE_HASH)
-        );
-        assert_eq!(
-            handler.get_hashed_password("o'reilly").await?.as_deref(),
-            Some("other-hash")
-        );
+        assert_eq!(handler.get_hashed_password("O'Reilly").await?.as_deref(), Some("hash-upper"));
+        Ok(())
+    }
+}
+
+// Alias: Distinguishes username case
+// Input: Same account fixture, input "o'reilly"
+// Expected: Ok(Some("hash-lower")).
+postgres_test! {
+    async fn lookup_exact_lower(pool: PgPool) -> sqlx::Result<()> {
+        seed_lookup_accounts(&pool).await?;
+        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1, Arc::new(Semaphore::new(1)));
+
+        assert_eq!(handler.get_hashed_password("o'reilly").await?.as_deref(), Some("hash-lower"));
+        Ok(())
+    }
+}
+
+// Alias: Returns none for a near match
+// Input: Same account fixture, input "O'Reill"
+// Expected: Ok(None).
+postgres_test! {
+    async fn lookup_missing(pool: PgPool) -> sqlx::Result<()> {
+        seed_lookup_accounts(&pool).await?;
+        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1, Arc::new(Semaphore::new(1)));
+
         assert_eq!(handler.get_hashed_password("O'Reill").await?, None);
+        Ok(())
+    }
+}
 
-        sqlx::query("ROLLBACK").execute(&pool).await?;
+// Alias: Returns the stored string unchanged
+// Input: account(7, "account", "invalid-phc"), input "account"
+// Expected: Ok(Some("invalid-phc")).
+postgres_test! {
+    async fn lookup_raw(pool: PgPool) -> sqlx::Result<()> {
+        seed_lookup_account(&pool, "account", "invalid-phc").await?;
+        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1, Arc::new(Semaphore::new(1)));
+
+        assert_eq!(handler.get_hashed_password("account").await?.as_deref(), Some("invalid-phc"));
+        Ok(())
+    }
+}
+
+// Alias: Returns the pool error
+// Input: Closed pool, input "account"
+// Expected: Err(sqlx::Error::PoolClosed).
+postgres_test! {
+    async fn lookup_closed(pool: PgPool) -> sqlx::Result<()> {
+        seed_lookup_account(&pool, "account", "invalid-phc").await?;
+        let handler = UserHandler::new(pool.clone(), mpsc::channel(1).1, Arc::new(Semaphore::new(1)));
+        pool.close().await;
+
+        assert!(matches!(
+            handler.get_hashed_password("account").await,
+            Err(sqlx::Error::PoolClosed)
+        ));
         Ok(())
     }
 }
