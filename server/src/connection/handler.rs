@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use tokio::sync::{oneshot, mpsc};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::codec::Framed;
@@ -23,7 +25,7 @@ type FlpcSink = SplitSink<Framed<TcpStream, FlpcCodec>, FlpcUnit>;
 pub struct ConnectionHandler {
     listener: TcpListener,
     user_tx: mpsc::Sender<UserRequest>,
-    token: String,
+    token: Arc<str>,
     max_len_username: usize,
     max_len_password: usize,
 }
@@ -32,14 +34,14 @@ impl ConnectionHandler {
     pub fn new(
         listener: TcpListener,
         user_tx: mpsc::Sender<UserRequest>,
-        token: &str,
+        token: Arc<str>,
         max_len_username: usize,
         max_len_password: usize,
     ) -> Self {
         Self {
             listener,
             user_tx,
-            token: token.to_string(),
+            token,
             max_len_username,
             max_len_password,
         }
@@ -52,12 +54,31 @@ impl ConnectionHandler {
                 Err(_) => break,
             };
 
-            let (mut sink, mut stream) = Framed::new(
+            let (sink, mut stream) = Framed::new(
                 stream,
                 FlpcCodec,
             ).split::<FlpcUnit>();
 
-            todo!()
+            let user_tx = self.user_tx.clone();
+            let token = self.token.clone();
+            let max_len_username = self.max_len_username;
+            let max_len_password = self.max_len_password;
+
+            tokio::spawn(async move {
+                let Some(Ok(unit)) = stream.next().await else {
+                    return;
+                };
+
+                route_first(
+                    unit,
+                    user_tx,
+                    &token,
+                    max_len_username,
+                    max_len_password,
+                    sink,
+                    stream,
+                ).await;
+            });
         }
     }
 }
@@ -68,7 +89,7 @@ async fn route_first(
     token: &str,
     max_len_username: usize,
     max_len_password: usize,
-    mut sink: FlpcSink,
+    sink: FlpcSink,
     mut stream: FlpcStream,
 ) {
     match unit {
@@ -108,9 +129,6 @@ async fn route_first(
         }
     }
 }
-
-
-
 
 async fn send_wrongunit(mut sink: FlpcSink) -> Result<(), CodecError> {
     sink.send(WrongUnit::new().into()).await
