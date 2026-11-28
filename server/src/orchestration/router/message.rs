@@ -8,7 +8,7 @@
 //! (needs to be implmeneted)
 //!
 
-use std::{collections::HashMap, error::Error};
+use std::error::Error;
 
 use tokio::sync::{mpsc, oneshot};
 
@@ -33,7 +33,6 @@ pub async fn message_router(
     id: u16,
     limid_tx: mpsc::Sender<oneshot::Sender<LimId>>,
     message_tx: mpsc::Sender<MessageRequest>,
-    writers: &HashMap<u16, mpsc::Sender<FlpcUnit>>,
 ) {}
 
 // end to end private message in, message to writers or singlesender to sender
@@ -42,7 +41,6 @@ pub async fn private_message_router(
     id: u16,
     limid_tx: mpsc::Sender<oneshot::Sender<LimId>>,
     message_tx: mpsc::Sender<MessageRequest>,
-    writers: &HashMap<u16, mpsc::Sender<FlpcUnit>>,
 ) {}
 
 // Requests an ID from the generator.
@@ -89,7 +87,6 @@ fn check_online (
 async fn send_private_message(
     id: u16,
     target_id: u16,
-    writers: &HashMap<u16, mpsc::Sender<FlpcUnit>>,
 ) {
     todo!()
 }
