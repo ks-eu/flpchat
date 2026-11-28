@@ -5,7 +5,7 @@ use std::{
 
 use flpc::{
     tokio::FlpcCodec,
-    unit::{FlpcUnit, Register, RemoveSelf, ServerUnit},
+    unit::{FlpcUnit, Register, RemoveSelf},
 };
 use futures_util::StreamExt;
 use sqlx::{
@@ -215,7 +215,7 @@ async fn run_tcp_insert(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         .await
         .expect("TCP handler and peer should finish");
         assert!(
-            matches!(response, FlpcUnit::Server(ServerUnit::ServerRegister(reply)) if *reply.outcome() == 0)
+            matches!(response, FlpcUnit::ServerRegister(reply) if *reply.outcome() == 0)
         );
         let hash = insert_state(pool).await?;
         assert_eq!(database::hash::verify_password(PASSWORD, &hash), Ok(true));
@@ -282,7 +282,7 @@ async fn run_tcp_remove(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         .await
         .expect("TCP handler and peer should finish");
         assert!(
-            matches!(response, FlpcUnit::Server(ServerUnit::ServerRemoveSelf(reply)) if *reply.result() == 0)
+            matches!(response, FlpcUnit::ServerRemoveSelf(reply) if *reply.result() == 0)
         );
         assert!(removed_state(pool).await?);
         rollback_sample(pool).await?;
