@@ -87,6 +87,20 @@ mod limid_generator {
         }
     }
 
+    #[tokio::test]
+    async fn closes_without_reply_when_clock_is_unavailable_or_out_of_range() {
+        for timestamp in [None, Some(LimId::MAX_TIMESTAMP_MS + 1)] {
+            let (tx, rx) = mpsc::channel(1);
+            let (reply, response) = oneshot::channel();
+            tx.send(reply).await.unwrap();
+            let task = tokio::spawn(generator::run_with_clock(rx, id(100, 0), move || timestamp));
+
+            assert!(timeout(TIMEOUT, response).await.unwrap().is_err());
+            join(task).await;
+            assert!(tx.is_closed());
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn performance() {
         timeout(TIMEOUT, async {
