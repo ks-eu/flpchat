@@ -8,7 +8,7 @@
 //! (needs to be implmeneted)
 //!
 
-use std::collections::HashMap;
+use std::{collections::HashMap, error::Error};
 
 use tokio::sync::{mpsc, oneshot};
 
@@ -31,7 +31,7 @@ use crate::connection::message::{
 pub async fn message_router(
     message: Message,
     id: u16,
-    limid_tx: mpsc::Sender<oneshot::Receiver<LimId>>,
+    limid_tx: mpsc::Sender<oneshot::Sender<LimId>>,
     message_tx: mpsc::Sender<MessageRequest>,
     writers: &HashMap<u16, mpsc::Sender<FlpcUnit>>,
 ) {}
@@ -40,15 +40,15 @@ pub async fn message_router(
 pub async fn private_message_router(
     message: PrivateMessage,
     id: u16,
-    limid_tx: mpsc::Sender<oneshot::Receiver<LimId>>,
+    limid_tx: mpsc::Sender<oneshot::Sender<LimId>>,
     message_tx: mpsc::Sender<MessageRequest>,
     writers: &HashMap<u16, mpsc::Sender<FlpcUnit>>,
 ) {}
 
-// calls the limid generator, returns the generated limid
+// Requests an ID from the generator.
 async fn get_limid(
-    limid_tx: mpsc::Sender<oneshot::Receiver<LimId>>
-) -> Result<LimId, oneshot::error::RecvError> {
+    limid_tx: &mpsc::Sender<oneshot::Sender<LimId>>,
+) -> Result<LimId, Box<dyn Error + Send + Sync>> {
     todo!()
 }
 
