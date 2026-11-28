@@ -3,7 +3,7 @@ use std::time::Duration;
 use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use flpc::{
     tokio::FlpcCodec,
-    unit::{FlpcUnit, Register, ServerUnit},
+    unit::{FlpcUnit, Register},
 };
 use futures_util::StreamExt;
 use sqlx::{PgPool, postgres::PgPoolOptions, types::JsonValue};
@@ -107,7 +107,7 @@ async fn registration_outcome(
         let frame = frame
             .expect("server should send one registration frame")
             .expect("peer should decode the registration frame");
-        let FlpcUnit::Server(ServerUnit::ServerRegister(response)) = frame else {
+        let FlpcUnit::ServerRegister(response) = frame else {
             panic!("expected ServerRegister, got {frame:?}");
         };
         assert!(

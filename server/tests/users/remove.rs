@@ -2,7 +2,6 @@ use std::pin::pin;
 use std::time::Duration;
 
 use argon2::{Argon2, PasswordHasher};
-use flpc::unit::ServerUnit;
 use futures_util::{StreamExt, poll};
 use sqlx::{PgPool, types::JsonValue};
 use tokio::{net::TcpListener, time::timeout};
@@ -119,7 +118,7 @@ async fn loopback() -> (FlpcSink, Framed<TcpStream, FlpcCodec>) {
 
 async fn read_result(peer: &mut Framed<TcpStream, FlpcCodec>) -> u8 {
     let frame = peer.next().await.expect("removal response").expect("valid FLPC frame");
-    let FlpcUnit::Server(ServerUnit::ServerRemoveSelf(response)) = frame else {
+    let FlpcUnit::ServerRemoveSelf(response) = frame else {
         panic!("expected ServerRemoveSelf, got {frame:?}");
     };
     assert!(peer.next().await.is_none(), "expected exactly one response frame");

@@ -6,11 +6,7 @@ use tokio_util::codec::Framed;
 use futures_util::stream::{SplitStream, SplitSink};
 use futures_util::{StreamExt, SinkExt};
 
-use flpc::unit::{
-    FlpcUnit,
-    WrongUnit,
-    ClientUnit,
-};
+use flpc::unit::{FlpcUnit, WrongUnit};
 use flpc::tokio::{CodecError, FlpcCodec};
 
 use crate::connection::login::handle_login_verification;
@@ -93,7 +89,7 @@ async fn route_first(
     mut stream: FlpcStream,
 ) {
     match unit {
-        FlpcUnit::Client(ClientUnit::Login(request)) => {
+        FlpcUnit::Login(request) => {
             let Some((id, sink)) = handle_login_verification(
                 request,
                 user_tx,
@@ -105,7 +101,7 @@ async fn route_first(
             };
             todo!()
         }
-        FlpcUnit::Client(ClientUnit::Register(request)) => {
+        FlpcUnit::Register(request) => {
             handle_register(
                 request,
                 user_tx,
@@ -115,7 +111,7 @@ async fn route_first(
                 max_len_password,
             ).await
         }
-        FlpcUnit::Client(ClientUnit::RemoveSelf(request)) => {
+        FlpcUnit::RemoveSelf(request) => {
             handle_removeself(
                 request,
                 user_tx,
@@ -125,7 +121,7 @@ async fn route_first(
             ).await
         }
         _ => {
-            let _ = send_wrongunit(sink);
+            let _ = send_wrongunit(sink).await;
         }
     }
 }

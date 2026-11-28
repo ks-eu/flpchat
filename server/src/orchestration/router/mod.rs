@@ -54,10 +54,6 @@ use tokio::sync::mpsc;
 
 use flpc::unit::{
     FlpcUnit,
-    ClientUnit,
-    AdminUnit,
-    ServerUnit,
-    PingUnit,
     ServerMessage,
     UserJoined,
     UserLeft,
@@ -75,16 +71,8 @@ pub enum RouterInput {
         unit: UserJoined,
         writer_tx: mpsc::Sender<FlpcUnit>,
     },
-    Client {
-        unit: ClientUnit,
-        id: u16,
-    },
-    Admin {
-        unit: AdminUnit,
-        id: u16,
-    },
-    Ping {
-        unit: PingUnit,
+    Received {
+        unit: FlpcUnit,
         id: u16,
     },
     UserLeft(UserLeft),
@@ -93,62 +81,7 @@ pub enum RouterInput {
     ChangedUsername(ChangedUsername),
 }
 
-#[derive(Clone)]
-pub enum RouterOutput {
-    ServerUnit(ServerUnit),
-    AdminUnit(AdminUnit),
-    Ping(Ping),
-}
-
-impl From<ServerMessage> for RouterOutput {
-    fn from(unit: ServerMessage) -> Self {
-        Self::ServerUnit(ServerUnit::ServerMessage(unit))
-    }
-}
-
-impl From<UserJoined> for RouterOutput {
-    fn from(unit: UserJoined) -> Self {
-        Self::ServerUnit(ServerUnit::UserJoined(unit))
-    }
-}
-
-impl From<UserLeft> for RouterOutput {
-    fn from(unit: UserLeft) -> Self {
-        Self::ServerUnit(ServerUnit::UserLeft(unit))
-    }
-}
-
-impl From<UserRegistered> for RouterOutput {
-    fn from(unit: UserRegistered) -> Self {
-        Self::ServerUnit(ServerUnit::UserRegistered(unit))
-    }
-}
-
-impl From<UserRemoved> for RouterOutput {
-    fn from(unit: UserRemoved) -> Self {
-        Self::ServerUnit(ServerUnit::UserRemoved(unit))
-    }
-}
-
-impl From<ChangedUsername> for RouterOutput {
-    fn from(unit: ChangedUsername) -> Self {
-        Self::ServerUnit(ServerUnit::ChangedUsername(unit))
-    }
-}
-
-impl From<Ping> for RouterOutput {
-    fn from(unit: Ping) -> Self {
-        Self::Ping(unit)
-    }
-}
-
-impl From<UserNotOnline> for RouterOutput {
-    fn from(unit: UserNotOnline) -> Self {
-        Self::ServerUnit(ServerUnit::UserNotOnline(unit))
-    }
-}
-
-trait Broadcastable: Into<RouterOutput> {}
+trait Broadcastable: Into<FlpcUnit> {}
 
 impl Broadcastable for ServerMessage {}
 impl Broadcastable for UserJoined {}
@@ -157,16 +90,16 @@ impl Broadcastable for UserRegistered {}
 impl Broadcastable for UserRemoved {}
 impl Broadcastable for ChangedUsername {}
 
-trait SingleSender: Into<RouterOutput> {}
+trait SingleSender: Into<FlpcUnit> {}
 
 impl SingleSender for Ping {}
 impl SingleSender for UserNotOnline {}
 
 fn broadcast(
     unit: impl Broadcastable,
-    writers: &HashMap<u16, mpsc::Sender<RouterOutput>>,
+    writers: &HashMap<u16, mpsc::Sender<FlpcUnit>>,
 ) {
-    let output: RouterOutput = unit.into();
+    let output: FlpcUnit = unit.into();
 
     for tx in writers.values() {
         let _ = tx.try_send(output.clone());
@@ -176,7 +109,7 @@ fn broadcast(
 fn single_sender(
     unit: impl SingleSender,
     id: u16,
-    writers: &HashMap<u16, mpsc::Sender<RouterOutput>>,
+    writers: &HashMap<u16, mpsc::Sender<FlpcUnit>>,
 ) {
     if let Some(tx) = writers.get(&id) {
         let _ = tx.try_send(unit.into());

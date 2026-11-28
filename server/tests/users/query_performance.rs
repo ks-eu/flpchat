@@ -6,7 +6,7 @@ use std::{
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use flpc::{
     tokio::FlpcCodec,
-    unit::{FlpcUnit, Register, RemoveSelf, ServerUnit},
+    unit::{FlpcUnit, Register, RemoveSelf},
 };
 use futures_util::StreamExt;
 use sqlx::{Arguments, PgPool, postgres::PgArguments, types::JsonValue};
@@ -416,7 +416,7 @@ postgres_test! {
             })
             .await
             .expect("TCP handler and peer should finish");
-            assert!(matches!(response, FlpcUnit::Server(ServerUnit::ServerRegister(reply)) if *reply.outcome() == 0));
+            assert!(matches!(response, FlpcUnit::ServerRegister(reply) if *reply.outcome() == 0));
             let registered_hash = registered_hash(&pool).await?;
             if run == 0 {
                 assert_eq!(verify_password(TIMING_PASSWORD, &registered_hash), Ok(true));
@@ -467,7 +467,7 @@ async fn measure_remove_tcp(
         .await
         .expect("TCP handler and peer should finish");
         assert!(
-            matches!(response, FlpcUnit::Server(ServerUnit::ServerRemoveSelf(reply)) if *reply.result() == 0)
+            matches!(response, FlpcUnit::ServerRemoveSelf(reply) if *reply.result() == 0)
         );
         assert!(removal_state(&pool, true, with_history).await?);
         sqlx::raw_sql("ROLLBACK TO SAVEPOINT benchmark_sample; RELEASE SAVEPOINT benchmark_sample")

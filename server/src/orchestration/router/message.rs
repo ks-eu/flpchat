@@ -13,15 +13,13 @@ use std::collections::HashMap;
 use tokio::sync::{mpsc, oneshot};
 
 use flpc::unit::{
+    FlpcUnit,
     Message,
     ServerMessage,
     PrivateMessage,
     ServerPrivateMessage,
 };
 
-use crate::orchestration::router::{
-    RouterOutput,
-};
 use crate::limid::LimId;
 
 // end to end message in, message to writers or singlesender to sender (need to implement
@@ -31,7 +29,7 @@ pub async fn message_router<T>(
     id: u16,
     limid_tx: mpsc::Sender<oneshot::Receiver<LimId>>,
     message_tx: mpsc::Sender<T>,
-    writers: &HashMap<u16, mpsc::Sender<RouterOutput>>,
+    writers: &HashMap<u16, mpsc::Sender<FlpcUnit>>,
 ) {}
 
 // end to end private message in, message to writers or singlesender to sender
@@ -40,7 +38,7 @@ pub async fn private_message_router<T>(
     id: u16,
     limid_tx: mpsc::Sender<oneshot::Receiver<LimId>>,
     message_tx: mpsc::Sender<T>,
-    writers: &HashMap<u16, mpsc::Sender<RouterOutput>>,
+    writers: &HashMap<u16, mpsc::Sender<FlpcUnit>>,
 ) {}
 
 // calls the limid generator, returns the generated limid
@@ -78,7 +76,7 @@ fn check_online (
 async fn send_private_message(
     id: u16,
     target_id: u16,
-    writers: &HashMap<u16, mpsc::Sender<RouterOutput>>,
+    writers: &HashMap<u16, mpsc::Sender<FlpcUnit>>,
 ) {
     todo!()
 }

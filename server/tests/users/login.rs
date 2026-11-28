@@ -1,7 +1,6 @@
 use std::{pin::pin, time::Duration};
 
 use argon2::{Argon2, PasswordHasher};
-use flpc::unit::ServerUnit;
 use futures_util::{StreamExt, poll};
 use sqlx::PgPool;
 use tokio::{io::AsyncWriteExt, net::TcpListener, time::timeout};
@@ -118,7 +117,7 @@ async fn send_serverlogin_sends_one_frame_with_given_code() {
         send_serverlogin(0x5a, sink).await.unwrap();
 
         let frame = peer.next().await.expect("login frame").unwrap();
-        let FlpcUnit::Server(ServerUnit::ServerLogin(response)) = frame else {
+        let FlpcUnit::ServerLogin(response) = frame else {
             panic!("expected ServerLogin, got {frame:?}");
         };
         assert_eq!(*response.outcome(), 0x5a);
@@ -156,7 +155,7 @@ async fn assert_login_frame(peer: &mut Framed<TcpStream, FlpcCodec>, expected: u
         .await
         .expect("login response frame")
         .expect("valid FLPC frame");
-    let FlpcUnit::Server(ServerUnit::ServerLogin(response)) = frame else {
+    let FlpcUnit::ServerLogin(response) = frame else {
         panic!("expected ServerLogin, got {frame:?}");
     };
     assert_eq!(*response.outcome(), expected);
