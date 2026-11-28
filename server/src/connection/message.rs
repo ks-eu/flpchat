@@ -17,7 +17,3 @@ impl From<ServerPrivateMessage> for MessageRequest {
     }
 }
 
-pub enum MessageResponse {
-    Success,
-    Fail,
-}

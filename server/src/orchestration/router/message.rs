@@ -22,7 +22,6 @@ use flpc::unit::{
 use crate::limid::LimId;
 use crate::connection::message::{
     MessageRequest,
-    MessageResponse,
 };
 
 // end to end message in, message to writers or singlesender to sender (need to implement
@@ -40,7 +39,9 @@ pub async fn private_message_router(
     id: u16,
     limid_tx: mpsc::Sender<oneshot::Sender<LimId>>,
     message_tx: mpsc::Sender<MessageRequest>,
-) {}
+) {
+    todo!()
+}
 
 // Requests an ID from the generator.
 async fn get_limid(
