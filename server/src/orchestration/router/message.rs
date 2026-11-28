@@ -21,23 +21,27 @@ use flpc::unit::{
 };
 
 use crate::limid::LimId;
+use crate::connection::message::{
+    MessageRequest,
+    MessageResponse,
+};
 
 // end to end message in, message to writers or singlesender to sender (need to implement
 // servermessagefail in flpc first)
-pub async fn message_router<T>(
+pub async fn message_router(
     message: Message,
     id: u16,
     limid_tx: mpsc::Sender<oneshot::Receiver<LimId>>,
-    message_tx: mpsc::Sender<T>,
+    message_tx: mpsc::Sender<MessageRequest>,
     writers: &HashMap<u16, mpsc::Sender<FlpcUnit>>,
 ) {}
 
 // end to end private message in, message to writers or singlesender to sender
-pub async fn private_message_router<T>(
+pub async fn private_message_router(
     message: PrivateMessage,
     id: u16,
     limid_tx: mpsc::Sender<oneshot::Receiver<LimId>>,
-    message_tx: mpsc::Sender<T>,
+    message_tx: mpsc::Sender<MessageRequest>,
     writers: &HashMap<u16, mpsc::Sender<FlpcUnit>>,
 ) {}
 
@@ -52,7 +56,7 @@ async fn get_limid(
 // request enum, needs implementing)
 async fn store_message<T>(
     message: T,
-    message_tx: mpsc::Sender<T>
+    message_tx: mpsc::Sender<MessageRequest>
 ) {}
 
 // takes message/private message, returns the server version or servermessagefail
