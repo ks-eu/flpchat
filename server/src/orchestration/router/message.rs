@@ -49,7 +49,9 @@ pub async fn private_message_router(
 async fn get_limid(
     limid_tx: &mpsc::Sender<oneshot::Sender<LimId>>,
 ) -> Result<LimId, Box<dyn Error + Send + Sync>> {
-    todo!()
+    let (reply, response) = oneshot::channel();
+    limid_tx.send(reply).await?;
+    response.await.map_err(Into::into)
 }
 
 // sends message or private message to the message table database handler
