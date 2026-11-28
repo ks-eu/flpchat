@@ -13,7 +13,6 @@ use std::error::Error;
 use tokio::sync::{mpsc, oneshot};
 
 use flpc::unit::{
-    FlpcUnit,
     Message,
     ServerMessage,
     PrivateMessage,
