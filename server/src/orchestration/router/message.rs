@@ -1,4 +1,13 @@
 //! routing and conversion for message units.
+//!
+//! extra notes for implementation:
+//!
+//! order is
+//! receive message -> get message_id -> convert -> try_send -> send to database handler
+//! if there is failure at these steps (except database handler send), then send ServerMessageFail
+//! (needs to be implmeneted)
+//!
+
 use std::collections::HashMap;
 
 use tokio::sync::{mpsc, oneshot};
@@ -65,7 +74,7 @@ fn check_online (
 }
 
 // the sender for successful private message - sends back to sender and to the
-// target recipient.
+// target recipient. do this before adding to database
 async fn send_private_message(
     id: u16,
     target_id: u16,
