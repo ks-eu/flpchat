@@ -52,20 +52,27 @@ async fn get_limid(
     todo!()
 }
 
-// sends message or private message to the message table database handler (T represents a
-// request enum, needs implementing)
-async fn store_message<T>(
-    message: T,
-    message_tx: mpsc::Sender<MessageRequest>
-) {}
+// sends message or private message to the message table database handler
+async fn store_message(
+    message: impl Into<MessageRequest>,
+    message_tx: &mpsc::Sender<MessageRequest>,
+) -> Result<(), mpsc::error::SendError<MessageRequest>> {
+    message_tx.send(message.into()).await
+}
 
-// takes message/private message, returns the server version or servermessagefail
-fn to_server <T, U>(
-    message: T,
-    id: u16,
+// FLPC's timestamp field carries the packed message ID, including its sequence.
+fn to_server_message(message: Message, sender_id: u16, message_id: LimId) -> ServerMessage {
+    let message_id = u64::from_be_bytes(message_id.to_be_bytes());
+    ServerMessage::new(sender_id, message_id, message.message().clone())
+}
+
+fn to_server_private_message(
+    message: PrivateMessage,
+    sender_id: u16,
     message_id: LimId,
-) -> U {
-    todo!()
+) -> ServerPrivateMessage {
+    let message_id = u64::from_be_bytes(message_id.to_be_bytes());
+    ServerPrivateMessage::new(sender_id, *message.target(), message_id, message.message().clone())
 }
 
 // checks if the targetted recipient is online
